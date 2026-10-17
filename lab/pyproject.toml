@@ -30,6 +30,12 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/lab"]
 
+# The one pin for uv. uv enforces it in this project; terraform/scanner.tf reads
+# it to install the same uv on the scanner box. Keep the exact `==X.Y.Z` form,
+# which that reader expects.
+[tool.uv]
+required-version = "==0.12.19"
+
 [tool.ruff]
 line-length = 88
 target-version = "py313"

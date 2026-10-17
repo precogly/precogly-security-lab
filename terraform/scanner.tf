@@ -9,6 +9,16 @@
 # differ in tag, size, disk, user data and what the role may read, and a module
 # for two boxes would hide those differences behind arguments.
 
+# uv for installing lab, at the version lab's pyproject.toml requires, so the box
+# and every developer run the same uv. regex() fails the plan if the line is
+# missing or not in the exact `required-version = "==X.Y.Z"` form.
+locals {
+  uv_version = regex(
+    "required-version = \"==([0-9]+\\.[0-9]+\\.[0-9]+)\"",
+    file("${path.module}/../lab/pyproject.toml"),
+  )[0]
+}
+
 # Empty until filled by hand, as in precogly.tf, and for the same reasons.
 resource "aws_secretsmanager_secret" "scanner_authkey" {
   name                    = "${var.project}/scanner-authkey"
@@ -133,6 +143,7 @@ resource "aws_instance" "scanner" {
     tailscale_hostname = "scanner"
     tailscale_tag      = "tag:scanner"
     tailnet_domain     = var.tailnet_domain
+    uv_version         = local.uv_version
   })
 
   user_data_replace_on_change = true

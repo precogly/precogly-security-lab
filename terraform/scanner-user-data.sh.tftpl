@@ -1,15 +1,9 @@
 #!/bin/bash
-# First-boot setup for the scanner box: join the tailnet with Tailscale SSH on,
-# and install Docker, since most scanners ship as images. The scanners and
-# agents themselves are installed by whoever runs them. Runs once, as root, via
-# cloud-init. Rendered by templatefile() in scanner.tf.
+# Scanner box first boot: Docker, lab's prerequisites, and the tailnet with
+# Tailscale SSH on. Rendered by templatefile() in scanner.tf.
 #
-# The Tailscale half is the same as precogly-user-data.sh.tftpl, copied rather
-# than shared so each box's first boot reads top to bottom in one file.
-#
-# templatefile() interpolates every dollar-brace sequence it sees, comments
-# included, so template variables are copied into shell variables below and
-# used only as "$NAME" afterwards.
+# templatefile() interpolates every dollar-brace, comments included, so the
+# script below never uses that form.
 set -euo pipefail
 
 # shellcheck disable=SC2154 # assigned by templatefile(), not by the shell
@@ -22,11 +16,19 @@ TS_HOSTNAME="${tailscale_hostname}"
 TS_TAG="${tailscale_tag}"
 # shellcheck disable=SC2154
 FQDN="${tailscale_hostname}.${tailnet_domain}"
+# shellcheck disable=SC2154
+UV_VERSION="${uv_version}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y docker.io jq
 usermod -aG docker ubuntu
+
+# lab's prerequisites: uv to install it, and the directory runs land in. lab
+# itself is installed at a commit by hand (docs/setup.md), so moving it never
+# replaces the box.
+sudo -u ubuntu -H sh -c "curl -LsSf https://astral.sh/uv/$UV_VERSION/install.sh | sh -s -- --quiet"
+install -d -o ubuntu -g ubuntu /var/lib/lab
 
 # The AWS CLI, to read the auth key. The Ubuntu AMI does not ship it; the snap
 # is the distribution AWS documents for Ubuntu.

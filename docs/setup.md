@@ -165,6 +165,20 @@ nc -z -w 5 <scanner tailnet IP> 22 && echo "OPEN: fix the policy" || echo closed
 
 From outside the tailnet, every box's public address is closed on every port.
 
+## 5. Install `lab` on the scanner box
+
+`lab` is installed at an exact commit of this repository, so the box runs code
+you can name. The box's first boot already installed uv, at the version
+`lab/pyproject.toml` requires, and created `/var/lib/lab`. Over
+`ssh ubuntu@scanner`, to install or move to a commit:
+
+```sh
+uv tool install --force \
+  "git+https://github.com/precogly/precogly-security-lab@<commit>#subdirectory=lab"
+lab jobs                          # every job loads
+lab run zap-baseline --dry-run    # reads real values, changes nothing
+```
+
 ## Using it
 
 | | |
