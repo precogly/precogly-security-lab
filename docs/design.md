@@ -145,10 +145,12 @@ What each part means for the system:
   questions).
 - **S3 is the handoff** between "a scanner finished" and "a finding was imported", so
   the collector can be retried and a run's raw output survives for re-import.
-- **DefectDojo has native parsers** for ZAP, Trivy, Semgrep, Schemathesis and ~180
-  others. The collector POSTs raw output to `/import-scan/` with a scan type and does
-  not normalize it. The custom harness is the one job whose output format is chosen
-  here (SARIF or DefectDojo generic-findings JSON).
+- **DefectDojo has native parsers** for ZAP, Trivy, Semgrep, garak, promptfoo and
+  ~180 others. Schemathesis is not among them at 3.4.101 (`dojo/tools`, read
+  2026-10-17); its job needs a converter to SARIF or the generic format. The collector
+  POSTs raw output to `/import-scan/` with a scan type and does not normalize it. The
+  custom harness is the one job whose output format is chosen here (SARIF or
+  DefectDojo generic-findings JSON).
 
 **Nothing sits between a scanner and Precogly's own TLS and headers.** A scan has to
 measure the thing being assessed. The AppSec plan withdrew ZAP's Reason A because it
@@ -830,12 +832,18 @@ What it costs:
 replace a special image name, and `--check` replaces any way of importing a
 development run).
 
-A job is a TOML file in `lab/jobs/`, read with the standard library's `tomllib` into a
-frozen dataclass that rejects unknown keys. Data, not code: a job that needs logic
-ships it in its image or its assets, so `lab` stays the one place that runs things.
+A job is a TOML file in `lab/src/lab/jobs/`, inside the package so that
+`uv tool install` ships it, read with the standard library's `tomllib` into a frozen
+dataclass that rejects unknown keys. Data, not code: a job that needs logic ships it
+in its image or its assets, so `lab` stays the one place that runs things.
+
+`scan_type` is an enum, `lab.job.ScanType`, whose members are DefectDojo's parser
+names copied from `dojo/tools/*/parser.py` at the deployed release, so a misspelt
+parser fails at load rather than at reimport. `--check` looks the name up in the
+deployed DefectDojo, which catches a parser renamed in an upgrade.
 
 ```toml
-# lab/jobs/zap-baseline.toml
+# lab/src/lab/jobs/zap-baseline.toml
 name      = "zap-baseline"
 image     = "ghcr.io/zaproxy/zaproxy:2.17.0"     # a tag, never `latest`
 command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "/out/report.xml"]
@@ -844,7 +852,7 @@ scan_type = "ZAP Scan"                           # DefectDojo's parser name
 ```
 
 ```toml
-# lab/jobs/harness.toml
+# lab/src/lab/jobs/harness.toml
 name      = "harness"
 image     = "@precogly-backend"    # "@": from this run's inputs, not a registry
 command   = ["python", "/job/run.py"]
@@ -854,7 +862,7 @@ scan_type = "Generic Findings Import"
 ```
 
 ```toml
-# lab/jobs/trivy-images.toml
+# lab/src/lab/jobs/trivy-images.toml
 name      = "trivy-images"
 image     = "aquasec/trivy:0.76.0"
 inputs    = ["precogly-images"]    # mounted read-only under /in
@@ -888,7 +896,7 @@ What `lab` gives every job container:
   the harness runs in `@precogly-backend` for the route walk, and running the replayer
   in the same container keeps the harness one job with one report. The replayer uses
   only the standard library, so the image needs nothing added.
-- **A target is a TOML file too**, `lab/targets/pentest.toml`: URL and the seed's
+- **A target is a TOML file too**, `lab/src/lab/targets/pentest.toml`: URL and the seed's
   logins. The logins are the seed's published constants, so they are not secrets.
   Jobs and targets combine at run time, which is what makes it N + M files.
 - **Success is "the report exists and is not empty", not the exit code.** Many
@@ -1021,7 +1029,8 @@ the Map state, retries, and parallel collection are exercised. A second instance
 feature testing (such as #585) needing only another module call is the test of D8.
 
 **Phase C — more coverage.** Semgrep (SAST), ZAP (authenticated DAST), Schemathesis (API
-fuzz). Each is one job and one DefectDojo scan type.
+fuzz). Each is one job and one DefectDojo scan type; Schemathesis needs its output
+converted first, since DefectDojo has no parser for it.
 
 **Phase D — DefectDojo goes native.** Migrate from EC2-compose to ECS + RDS + ElastiCache
 + internal ALB. The migration is the lesson (D1).
