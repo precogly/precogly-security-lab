@@ -35,8 +35,9 @@ depend on the plan's group support.
 ```jsonc
 {
   "tagOwners": {
-    "tag:precogly": ["autogroup:admin"],
-    "tag:scanner":  ["autogroup:admin"],
+    "tag:precogly":   ["autogroup:admin"],
+    "tag:scanner":    ["autogroup:admin"],
+    "tag:defectdojo": ["autogroup:admin"],
   },
 
   "grants": [
@@ -53,14 +54,23 @@ depend on the plan's group support.
       "dst": ["tag:scanner"],
       "ip":  ["tcp:22"],
     },
-    // Scanners and agents reach the instance, and nothing else on the tailnet.
+    // People reach DefectDojo's UI.
     {
-      "src": ["tag:scanner"],
-      "dst": ["tag:precogly"],
+      "src": ["teammate-one@example.com", "teammate-two@example.com"],
+      "dst": ["tag:defectdojo"],
       "ip":  ["tcp:443"],
     },
-    // tag:precogly appears as a source nowhere. Keep it that way: it is what
-    // stops a compromised target reaching anything.
+    // Scanners and agents reach the instance, and `lab` on the scanner box
+    // reaches DefectDojo's API to reimport each run's report. Nothing else on
+    // the tailnet.
+    {
+      "src": ["tag:scanner"],
+      "dst": ["tag:precogly", "tag:defectdojo"],
+      "ip":  ["tcp:443"],
+    },
+    // tag:precogly and tag:defectdojo appear as a source nowhere. Keep it that
+    // way: it is what stops a compromised target, or a compromised DefectDojo,
+    // reaching anything.
   ],
 
   "ssh": [
@@ -81,14 +91,29 @@ Settings → Keys → Generate auth key:
 - Reusable: off. One key, one node.
 - Ephemeral: off. The box should stay on the tailnet across reboots.
 - Pre-approved: on.
-- Tags: `tag:precogly` for the instance, `tag:scanner` for the scanner box.
+- Tags: `tag:precogly` for the instance, `tag:scanner` for the scanner box,
+  `tag:defectdojo` for the DefectDojo box.
 - Expiration: 1 day. It is used once, at first boot.
+
+Each box waits up to an hour for a value starting `tskey-auth-` in its own
+secret, and overwrites the secret with `spent` once it has joined. Match the tag
+to the secret: a key in the wrong secret joins the wrong box under the wrong tag.
 
 ```sh
 aws secretsmanager put-secret-value --secret-id precogly-seclab/precogly-authkey \
   --secret-string 'tskey-auth-...'
 aws secretsmanager put-secret-value --secret-id precogly-seclab/scanner-authkey \
   --secret-string 'tskey-auth-...'
+aws secretsmanager put-secret-value --secret-id precogly-seclab/defectdojo-authkey \
+  --secret-string 'tskey-auth-...'
+```
+
+DefectDojo's admin password is generated at its first boot and written to a
+secret by the box:
+
+```sh
+aws secretsmanager get-secret-value --secret-id precogly-seclab/defectdojo-admin \
+  --query SecretString --output text
 ```
 
 When replacing a box, remove the old node from the Machines page first, or the new

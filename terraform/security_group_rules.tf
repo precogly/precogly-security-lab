@@ -1,7 +1,7 @@
 # Every rule, one resource each, grouped by the group it attaches to. All of
 # them are egress; the reason there is no ingress is in security_group.tf.
 #
-# The two boxes get the same four rules, written out twice rather than looped,
+# Every box gets the same four rules, written out per box rather than looped,
 # so each group's whole reach can be read in one place.
 #
 # Deliberately absent:
@@ -104,6 +104,44 @@ resource "aws_vpc_security_group_egress_rule" "scanner_stun" {
 
 resource "aws_vpc_security_group_egress_rule" "scanner_wireguard" {
   security_group_id = aws_security_group.scanner.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "udp"
+  from_port         = 41641
+  to_port           = 41641
+  description       = "Tailscale direct WireGuard"
+}
+
+# The DefectDojo box. The same four, for the same reasons. 443 carries its
+# image pulls from DefectDojo's registry and the clone of its repository.
+resource "aws_vpc_security_group_egress_rule" "defectdojo_https" {
+  security_group_id = aws_security_group.defectdojo.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  description       = "Tailscale, packages, images, GitHub, Secrets Manager, SSM"
+}
+
+resource "aws_vpc_security_group_egress_rule" "defectdojo_http" {
+  security_group_id = aws_security_group.defectdojo.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 80
+  to_port           = 80
+  description       = "Ubuntu apt mirrors"
+}
+
+resource "aws_vpc_security_group_egress_rule" "defectdojo_stun" {
+  security_group_id = aws_security_group.defectdojo.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "udp"
+  from_port         = 3478
+  to_port           = 3478
+  description       = "Tailscale STUN, for direct paths"
+}
+
+resource "aws_vpc_security_group_egress_rule" "defectdojo_wireguard" {
+  security_group_id = aws_security_group.defectdojo.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "udp"
   from_port         = 41641

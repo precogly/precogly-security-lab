@@ -44,3 +44,13 @@ resource "aws_security_group" "scanner" {
 
   tags = { Name = "${var.project}-scanner" }
 }
+
+# DefectDojo is reached over the tailnet like the instance: people on the UI,
+# the scanner box on the API, both through `tailscale serve` on 443.
+resource "aws_security_group" "defectdojo" {
+  name        = "${var.project}-defectdojo"
+  description = "DefectDojo: the findings record, reached only over the tailnet"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project}-defectdojo" }
+}

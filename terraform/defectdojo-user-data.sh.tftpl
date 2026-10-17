@@ -1,0 +1,208 @@
+#!/bin/bash
+# DefectDojo box first boot: join the tailnet, run DefectDojo's compose file,
+# serve it over HTTPS with `tailscale serve`.
+# Docs: https://github.com/DefectDojo/django-DefectDojo/blob/3.4.101/readme-docs/DOCKER.md
+#
+# templatefile() interpolates every dollar-brace, comments included, so the
+# script below never uses that form.
+set -euo pipefail
+
+# shellcheck disable=SC2154 # assigned by templatefile(), not by the shell
+REGION="${region}"
+# shellcheck disable=SC2154
+AUTHKEY_SECRET="${authkey_secret_arn}"
+# shellcheck disable=SC2154
+ADMIN_SECRET="${admin_secret_arn}"
+# shellcheck disable=SC2154
+TS_HOSTNAME="${tailscale_hostname}"
+# shellcheck disable=SC2154
+TS_TAG="${tailscale_tag}"
+# shellcheck disable=SC2154
+FQDN="${tailscale_hostname}.${tailnet_domain}"
+# shellcheck disable=SC2154
+DEFECTDOJO_VERSION="${defectdojo_version}"
+# shellcheck disable=SC2154
+BACKUP_BUCKET="${backup_bucket}"
+
+APP=/opt/defectdojo
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io docker-compose-v2 git jq
+snap install aws-cli --classic
+
+# Skips anything not shaped like a key, such as the last box's "spent".
+read_authkey() {
+  local secret_id="$1" deadline=$((SECONDS + 3600)) value
+  while true; do
+    value="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
+      --query SecretString --output text 2>/dev/null || true)"
+    if [[ "$value" == tskey-auth-* ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "gave up waiting for a tskey-auth- value in $secret_id" >&2
+      return 1
+    fi
+    echo "waiting for a tskey-auth- value in $secret_id" >&2
+    sleep 30
+  done
+}
+
+# Tailscale
+
+# shellcheck source=/dev/null
+. /etc/os-release
+curl -fsSLo /usr/share/keyrings/tailscale-archive-keyring.gpg \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.noarmor.gpg"
+curl -fsSLo /etc/apt/sources.list.d/tailscale.list \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.tailscale-keyring.list"
+apt-get update
+apt-get install -y tailscale
+systemctl enable --now tailscaled
+
+# No tailnet DNS: the policy lets this box reach no other node.
+install -m 600 /dev/null /run/tailscale-authkey
+read_authkey "$AUTHKEY_SECRET" > /run/tailscale-authkey
+tailscale up \
+  --auth-key=file:/run/tailscale-authkey \
+  --advertise-tags="$TS_TAG" \
+  --hostname="$TS_HOSTNAME" \
+  --accept-dns=false
+rm -f /run/tailscale-authkey
+aws secretsmanager put-secret-value --region "$REGION" --secret-id "$AUTHKEY_SECRET" \
+  --secret-string spent >/dev/null
+
+ACTUAL_FQDN="$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')"
+if [[ "$ACTUAL_FQDN" != "$FQDN" ]]; then
+  echo "joined as $ACTUAL_FQDN, expected $FQDN: remove the old node from the Machines page and replace this instance" >&2
+  exit 1
+fi
+
+# DefectDojo
+
+git clone --depth 1 --branch "$DEFECTDOJO_VERSION" \
+  https://github.com/DefectDojo/django-DefectDojo.git "$APP"
+cd "$APP"
+
+# Upstream defaults these secrets to the same values on every install, and the
+# image tags to `latest`. token_urlsafe(24) gives the 32 characters the AES key
+# needs.
+SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(50))')"
+AES_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+install -m 600 /dev/null .env
+cat > .env <<ENV
+DJANGO_VERSION=$DEFECTDOJO_VERSION
+NGINX_VERSION=$DEFECTDOJO_VERSION
+DD_SECRET_KEY=$SECRET_KEY
+DD_CREDENTIAL_AES_256_KEY=$AES_KEY
+DD_DATABASE_PASSWORD=$DB_PASSWORD
+DD_DATABASE_URL=postgresql://defectdojo:$DB_PASSWORD@postgres:5432/defectdojo
+DD_ALLOWED_HOSTS=$FQDN
+ENV
+unset SECRET_KEY AES_KEY DB_PASSWORD
+
+# Loaded automatically; the release ships no override of its own. nginx binds
+# to loopback only, since `tailscale serve` handles HTTPS. Upstream's compose
+# file does not pass the site URL or CSRF origins through, so they are set here.
+cat > docker-compose.override.yml <<OVERRIDE
+services:
+  nginx:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+  uwsgi:
+    environment:
+      DD_SITE_URL: "https://$FQDN"
+      DD_CSRF_TRUSTED_ORIGINS: "https://$FQDN"
+      DD_SESSION_COOKIE_SECURE: "True"
+      DD_CSRF_COOKIE_SECURE: "True"
+  celeryworker:
+    environment:
+      DD_SITE_URL: "https://$FQDN"
+OVERRIDE
+
+# Restore the newest dump, if there is one, before the initializer runs. It
+# then finds the admin user, skips first-boot setup, and the password already
+# in the admin secret stays valid.
+# shellcheck disable=SC2016 # the backticks are a JMESPath literal, not a command
+LATEST_DUMP="$(aws s3api list-objects-v2 --region "$REGION" --bucket "$BACKUP_BUCKET" \
+  --prefix pg/ --query 'sort_by(Contents || `[]`, &Key)[-1].Key' --output text)"
+if [[ "$LATEST_DUMP" != None ]]; then
+  docker compose up -d postgres
+  until docker compose exec -T postgres pg_isready -U defectdojo -d defectdojo >/dev/null 2>&1; do
+    sleep 5
+  done
+  aws s3 cp --region "$REGION" "s3://$BACKUP_BUCKET/$LATEST_DUMP" - \
+    | gunzip | docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U defectdojo -d defectdojo
+  echo "restored $LATEST_DUMP"
+fi
+
+docker compose up -d
+
+# On a fresh database the initializer prints the generated admin password once
+# (dojo/management/commands/complete_initialization.py). Keep it in Secrets
+# Manager. Twenty minutes is arbitrary.
+if [[ "$LATEST_DUMP" == None ]]; then
+  deadline=$((SECONDS + 1200))
+  until ADMIN_PASSWORD="$(docker compose logs initializer 2>/dev/null \
+    | grep -o 'Admin password: .*' | head -1 | cut -d' ' -f3)" && [[ -n "$ADMIN_PASSWORD" ]]; do
+    if ((SECONDS >= deadline)); then
+      echo "no admin password in the initializer's logs; see: docker compose logs initializer" >&2
+      exit 1
+    fi
+    sleep 15
+  done
+  aws secretsmanager put-secret-value --region "$REGION" --secret-id "$ADMIN_SECRET" \
+    --secret-string "$ADMIN_PASSWORD" >/dev/null
+  unset ADMIN_PASSWORD
+fi
+
+# Nightly dump to S3. Keys sort by time, which the restore above relies on.
+cat > /usr/local/bin/defectdojo-backup <<BACKUP
+#!/bin/bash
+set -euo pipefail
+cd $APP
+docker compose exec -T postgres pg_dump -U defectdojo -d defectdojo \\
+  | gzip | /snap/bin/aws s3 cp --region $REGION - "s3://$BACKUP_BUCKET/pg/\$(date -u +%Y-%m-%dT%H%M%SZ).sql.gz"
+BACKUP
+chmod 755 /usr/local/bin/defectdojo-backup
+
+cat > /etc/systemd/system/defectdojo-backup.service <<'UNIT'
+[Unit]
+Description=Dump DefectDojo's database to S3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/defectdojo-backup
+UNIT
+
+cat > /etc/systemd/system/defectdojo-backup.timer <<'UNIT'
+[Unit]
+Description=Nightly DefectDojo database dump
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now defectdojo-backup.timer
+
+# --bg persists across reboots. Fine to terminate TLS outside the app here:
+# this box is not a scan target.
+tailscale serve --bg --https=443 http://127.0.0.1:8080
+
+TS_IP="$(tailscale ip -4)"
+deadline=$((SECONDS + 600))
+until curl -sf -o /dev/null --resolve "$FQDN:443:$TS_IP" "https://$FQDN/login"; do
+  if ((SECONDS >= deadline)); then
+    echo "https://$FQDN/login did not answer; see: docker compose ps" >&2
+    exit 1
+  fi
+  sleep 15
+done
+echo "DefectDojo is up at https://$FQDN/"
