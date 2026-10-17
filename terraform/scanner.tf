@@ -26,6 +26,16 @@ resource "aws_secretsmanager_secret" "scanner_authkey" {
   recovery_window_in_days = 0
 }
 
+# The box's SSH host keys, saved by the first box and restored by every later
+# one, so a replacement keeps the host key people's ssh already trusts. Anyone
+# who can read this through the box's role already has root on the box, and so
+# its keys.
+resource "aws_secretsmanager_secret" "scanner_ssh_host_keys" {
+  name                    = "${var.project}/scanner-ssh-host-keys"
+  description             = "The scanner box's SSH host keys, as JSON {rsa, ecdsa, ed25519}. Written by the first box, restored by every replacement."
+  recovery_window_in_days = 0
+}
+
 # Read its own auth key (and overwrite it once spent) and the commit the
 # instance runs, plus SSM. In particular, no access to the instance's secret: an
 # agent that takes over this box should learn nothing it could use to join the
@@ -57,7 +67,10 @@ resource "aws_iam_role_policy" "scanner_authkey" {
         "secretsmanager:GetSecretValue",
         "secretsmanager:PutSecretValue",
       ]
-      Resource = aws_secretsmanager_secret.scanner_authkey.arn
+      Resource = [
+        aws_secretsmanager_secret.scanner_authkey.arn,
+        aws_secretsmanager_secret.scanner_ssh_host_keys.arn,
+      ]
     }]
   })
 }
@@ -138,12 +151,13 @@ resource "aws_instance" "scanner" {
   }
 
   user_data = templatefile("${path.module}/scanner-user-data.sh.tftpl", {
-    region             = var.region
-    authkey_secret_arn = aws_secretsmanager_secret.scanner_authkey.arn
-    tailscale_hostname = "scanner"
-    tailscale_tag      = "tag:scanner"
-    tailnet_domain     = var.tailnet_domain
-    uv_version         = local.uv_version
+    region               = var.region
+    authkey_secret_arn   = aws_secretsmanager_secret.scanner_authkey.arn
+    tailscale_hostname   = "scanner"
+    tailscale_tag        = "tag:scanner"
+    tailnet_domain       = var.tailnet_domain
+    uv_version           = local.uv_version
+    host_keys_secret_arn = aws_secretsmanager_secret.scanner_ssh_host_keys.arn
   })
 
   user_data_replace_on_change = true

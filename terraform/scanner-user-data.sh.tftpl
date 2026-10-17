@@ -18,6 +18,8 @@ TS_TAG="${tailscale_tag}"
 FQDN="${tailscale_hostname}.${tailnet_domain}"
 # shellcheck disable=SC2154
 UV_VERSION="${uv_version}"
+# shellcheck disable=SC2154
+HOST_KEYS_SECRET="${host_keys_secret_arn}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -29,6 +31,11 @@ usermod -aG docker ubuntu
 # replaces the box.
 sudo -u ubuntu -H sh -c "curl -LsSf https://astral.sh/uv/$UV_VERSION/install.sh | sh -s -- --quiet"
 install -d -o ubuntu -g ubuntu /var/lib/lab
+# uv puts tools in ~/.local/bin, on PATH only in a login shell. These make
+# `ssh ubuntu@scanner lab ...` work too. The lab link dangles until lab is
+# installed.
+ln -sf /home/ubuntu/.local/bin/uv /usr/local/bin/uv
+ln -sf /home/ubuntu/.local/bin/lab /usr/local/bin/lab
 
 # The AWS CLI, to read the auth key. The Ubuntu AMI does not ship it; the snap
 # is the distribution AWS documents for Ubuntu.
@@ -53,6 +60,31 @@ read_authkey() {
     sleep 30
   done
 }
+
+# One SSH identity across replacements, so `ssh ubuntu@scanner` never sees a
+# changed host key. Tailscale SSH presents /etc/ssh's host keys when it can
+# read them (ssh/tailssh/hostkeys.go, v1.104.1). The first box saves the keys
+# cloud-init generated; every later box restores them, before Tailscale starts.
+SAVED_KEYS="$(aws secretsmanager get-secret-value --region "$REGION" \
+  --secret-id "$HOST_KEYS_SECRET" --query SecretString --output text 2>/dev/null || true)"
+if jq -e 'has("ed25519")' >/dev/null 2>&1 <<<"$SAVED_KEYS"; then
+  for type in rsa ecdsa ed25519; do
+    key=/etc/ssh/ssh_host_"$type"_key
+    install -m 600 /dev/null "$key"
+    jq -r --arg t "$type" '.[$t]' <<<"$SAVED_KEYS" > "$key"
+    ssh-keygen -y -f "$key" > "$key.pub"
+  done
+  echo "restored the saved SSH host keys"
+else
+  jq -n --rawfile rsa /etc/ssh/ssh_host_rsa_key \
+    --rawfile ecdsa /etc/ssh/ssh_host_ecdsa_key \
+    --rawfile ed25519 /etc/ssh/ssh_host_ed25519_key \
+    '{rsa: $rsa, ecdsa: $ecdsa, ed25519: $ed25519}' \
+    | aws secretsmanager put-secret-value --region "$REGION" \
+      --secret-id "$HOST_KEYS_SECRET" --secret-string file:///dev/stdin >/dev/null
+  echo "saved this box's SSH host keys"
+fi
+unset SAVED_KEYS
 
 # shellcheck source=/dev/null
 . /etc/os-release

@@ -136,8 +136,8 @@ A box that finishes prints `Precogly is up at …`, `scanner box is up at …` o
 
 **Replacing a box:** remove its old node on the **Machines** page first. Otherwise
 the new one joins as `<name>-1`, and its boot stops itself rather than run under
-the wrong URL. A replaced scanner box has a new SSH host key, so `ssh` refuses it
-until the old one is forgotten: `ssh-keygen -R scanner`.
+the wrong URL. A replaced scanner box restores its predecessor's SSH host keys, so
+`ssh ubuntu@scanner` keeps trusting it.
 
 ## 4. Check
 
@@ -180,9 +180,8 @@ lab jobs                          # every job loads
 lab run zap-baseline --dry-run    # reads real values, changes nothing
 ```
 
-uv installs `lab` in `~/.local/bin`, which only a login shell puts on `PATH`. An
-interactive `ssh ubuntu@scanner` is one; a one-shot command is not, so run it
-through one: `ssh ubuntu@scanner 'bash -lc "lab run zap-baseline"'`.
+`lab` and `uv` are linked into `/usr/local/bin`, so one-shot commands work too:
+`ssh ubuntu@scanner lab run zap-baseline`.
 
 ## Using it
 
