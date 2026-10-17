@@ -765,10 +765,19 @@ The model, and why it is shaped this way:
 - The policy grows: people → `tag:defectdojo` on 443, and `tag:scanner` →
   `tag:defectdojo` on 443 for the reimport.
 - `lab` runs beside untrusted jobs on the scanner box and holds a DefectDojo API token.
-  An agent that takes over the box can falsify that Product's findings. The token
-  belongs to a DefectDojo user with write access to the one Product and nothing else.
-  The design until 2026-10-17 kept this apart (a collector that never runs next to a
-  scan job), and Phase B restores it by moving the reimport to the collector.
+  An agent that takes over the box can falsify that Product's findings, though not
+  delete them. The token belongs to `lab`, a DefectDojo user that is neither staff nor
+  superuser and is a member of the one Product. In DefectDojo 3.4.101's open-source
+  authorization, roles are inert labels: a non-staff member of a Product's
+  `authorized_users` may view, add, edit and import on it and everything under it, and
+  deleting anything takes staff (`dojo/authorization/authorization.py`, read
+  2026-10-17). The design until 2026-10-17 kept this apart (a collector that never runs
+  next to a scan job), and Phase B restores it by moving the reimport to the collector.
+- The DefectDojo box creates `lab`, its token, the Product and the Engagement itself, at
+  every first boot, idempotently, and writes the token to a secret only the scanner
+  box's role can read. After a restore they come back from the dump and the step finds
+  them in place. Rejected: a `lab init` a person runs with the admin password, which is
+  easier to test but puts that password on the scanner box beside untrusted agents.
 - Counts move for reasons other than the code: a new tool version, a new rule pack, a
   change to DefectDojo's dedup settings. The version is in each history row so a chart
   can mark those, but nothing stops them.
@@ -812,9 +821,10 @@ What it costs:
   with it (stored tool credentials) does not decrypt after a restore. The lab stores
   none: `lab` authenticates with an API token, which is a plain database row and
   survives. Store the key in Secrets Manager if that changes.
-- A restore is code that runs rarely, so it rots unnoticed. Test it once after the first
-  dump exists: replace the box and check that a known finding and its history are
-  back.
+- A restore is code that runs rarely, so it rots unnoticed. Tested once on 2026-10-17
+  by replacing the box: the Product, the Engagement, `lab`'s membership and its token
+  came back, and the old admin password still authenticated. Not yet tested with
+  findings and import history in the dump; repeat after the first real runs.
 
 ## The AI layer
 
