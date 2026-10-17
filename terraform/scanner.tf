@@ -14,9 +14,9 @@ resource "aws_secretsmanager_secret" "scanner_authkey" {
   recovery_window_in_days = 0
 }
 
-# Read its own auth key and nothing else, plus SSM. In particular, no access to
-# the instance's secret: an agent that takes over this box should learn nothing
-# it could use to join the tailnet as tag:precogly.
+# Read its own auth key and the commit the instance runs, plus SSM. In
+# particular, no access to the instance's secret: an agent that takes over this
+# box should learn nothing it could use to join the tailnet as tag:precogly.
 resource "aws_iam_role" "scanner" {
   name = "${var.project}-scanner"
 
@@ -40,6 +40,26 @@ resource "aws_iam_role_policy" "scanner_read_authkey" {
       Effect   = "Allow"
       Action   = "secretsmanager:GetSecretValue"
       Resource = aws_secretsmanager_secret.scanner_authkey.arn
+    }]
+  })
+}
+
+# The harness reads the commit to check out (design doc D13). Public
+# information, but written by Terraform alone, which is what makes it trusted.
+#
+# AmazonSSMManagedInstanceCore below already grants ssm:GetParameter on every
+# parameter, so this adds no access today. It is written out so the harness's
+# one AWS dependency is visible here, and survives AWS narrowing that policy.
+resource "aws_iam_role_policy" "scanner_read_precogly_sha" {
+  name = "read-precogly-sha"
+  role = aws_iam_role.scanner.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ssm:GetParameter"
+      Resource = aws_ssm_parameter.precogly_sha.arn
     }]
   })
 }

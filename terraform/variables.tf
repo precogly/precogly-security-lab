@@ -32,8 +32,8 @@ variable "instance_name" {
   default     = "pentest"
 }
 
-variable "precogly_ref" {
-  description = "Git ref of precogly/precogly the instance deploys. A branch moves under a rebuild; a commit SHA does not."
+variable "precogly_branch" {
+  description = "Branch of precogly/precogly to deploy. Resolved to a commit SHA on every plan, so an apply after a push to it replaces the instance."
   type        = string
   default     = "main"
 }

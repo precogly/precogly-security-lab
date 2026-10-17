@@ -9,6 +9,48 @@
 # Setup that Terraform does not do (the tailnet policy, MagicDNS and HTTPS, the
 # auth key) is in docs/tailnet-setup.md.
 
+# The commit the instance deploys, resolved from the branch on every plan
+# (design doc D13). Both boxes use this SHA and never the branch name: the
+# instance deploys it, and the scanner box's harness checks it out to walk the
+# routes. A branch name handed to each separately could name two different
+# commits, and the harness would test routes the instance does not have.
+#
+# The vnd.github.sha media type makes GitHub return the bare SHA as the body.
+# Unauthenticated, 60 requests an hour, ample for plans.
+data "http" "precogly_commit" {
+  url = "https://api.github.com/repos/precogly/precogly/commits/${var.precogly_branch}"
+
+  request_headers = {
+    Accept = "application/vnd.github.sha"
+  }
+
+  lifecycle {
+    # A rate-limit or not-found reply is JSON, not a SHA. Fail the plan rather
+    # than deploy a body that is not a commit.
+    postcondition {
+      condition     = self.status_code == 200 && can(regex("^[0-9a-f]{40}$", trimspace(self.response_body)))
+      error_message = "Could not resolve branch \"${var.precogly_branch}\" of precogly/precogly to a commit (HTTP ${self.status_code}). Check the branch exists, or wait out GitHub's unauthenticated rate limit."
+    }
+  }
+}
+
+locals {
+  precogly_sha = trimspace(data.http.precogly_commit.response_body)
+}
+
+# The harness's source of truth for which commit the instance runs. Only
+# Terraform writes it. The instance is the target, and a target that could
+# change this could hide routes from the harness, so no role on either box has
+# ssm:PutParameter. Both can read it: AmazonSSMManagedInstanceCore grants
+# ssm:GetParameter on every parameter (checked 2026-10-17), which is harmless
+# for a public commit SHA.
+resource "aws_ssm_parameter" "precogly_sha" {
+  name        = "/${var.project}/precogly-sha"
+  description = "Commit of precogly/precogly the instance deploys. Read by the harness on the scanner box."
+  type        = "String"
+  value       = local.precogly_sha
+}
+
 # Terraform creates the secret empty and never writes a value, so the auth key
 # never passes through Terraform state. It is filled by hand after apply; the
 # instance reads it at first boot.
@@ -114,12 +156,16 @@ resource "aws_instance" "precogly" {
     tailscale_hostname = var.instance_name
     tailscale_tag      = "tag:precogly"
     tailnet_domain     = var.tailnet_domain
-    precogly_ref       = var.precogly_ref
+    precogly_ref       = local.precogly_sha
   })
 
   # User data runs only at first boot, so an edit that did not replace the
   # instance would change nothing while looking applied.
   user_data_replace_on_change = true
+
+  # Because the SHA is in the user data above, a push to the branch followed by
+  # any apply replaces this instance and loses its database. Read the plan for
+  # this resource before every apply.
 
   lifecycle {
     # A new AMI would replace the instance, and with it the database, on the

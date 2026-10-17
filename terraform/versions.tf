@@ -9,6 +9,12 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+
+    # Resolves the Precogly branch to a commit at plan time (precogly.tf).
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.0"
+    }
   }
 
   # State is local for Phase A. An S3 + DynamoDB backend is itself one of the
