@@ -11,9 +11,9 @@ internet.
 Phase A is two boxes: a Precogly instance, and a scanner box where scanners and
 AI pentest agents run against it. Later phases add what the platform was first
 designed around: instances created by name from a small config, scan jobs as
-ephemeral containers, and DefectDojo as the place every finding lands.
+ephemeral containers. SecObserve is where every finding lands, from Phase A.
 Off-the-shelf scanners and a hand-written pentest harness are equal citizens:
-each is a job the platform runs and a parser DefectDojo already knows.
+each is a job the platform runs, reporting in a format SecObserve parses.
 
 ## Goals
 
@@ -41,10 +41,10 @@ item serves, and two of them pull against each other.
 Two anti-goals, because the failure modes here are specific and both are cheap to
 walk into:
 
-- **Do not reinvent DefectDojo.** A findings database, cross-tool dedup, and a
-  triage UI are solved upstream. Building any of them is CRUD that teaches neither
+- **Do not reinvent the findings store.** A findings database, cross-tool dedup, and
+  a triage UI are solved upstream. Building any of them is CRUD that teaches neither
   AWS nor AppSec. The moment a findings table or a dedup function is being written,
-  stop — that is DefectDojo, and it is better at it.
+  stop — that is SecObserve's job, and it is better at it.
 - **Do not let the AI layer become the project.** Autonomous LLM pentest agents are
   the least mature thing on this board. They are a hardened job type the platform can
   run, not its purpose. Debugging prompt loops is not learning AWS.
@@ -146,12 +146,11 @@ What each part means for the system:
   questions).
 - **S3 is the handoff** between "a scanner finished" and "a finding was imported", so
   the collector can be retried and a run's raw output survives for re-import.
-- **DefectDojo has native parsers** for ZAP, Trivy, Semgrep, garak, promptfoo and
-  ~180 others. Schemathesis is not among them at 3.4.101 (`dojo/tools`, read
-  2026-10-17); its job needs a converter to SARIF or the generic format. The collector
-  POSTs raw output to `/import-scan/` with a scan type and does not normalize it. The
-  custom harness is the one job whose output format is chosen here (SARIF or
-  DefectDojo generic-findings JSON).
+- **SecObserve parses the standard formats**: SARIF, CycloneDX and ZAP's JSON among
+  them, detecting the parser from the file (`import_observations/parsers`, v1.61.0).
+  Each job reports in one of those (D14); a tool with none, like Schemathesis, needs
+  its output converted to SARIF. The collector uploads raw reports and does not
+  normalize them. The custom harness writes SARIF.
 
 **Nothing sits between a scanner and Precogly's own TLS and headers.** A scan has to
 measure the thing being assessed. The AppSec plan withdrew ZAP's Reason A because it
@@ -180,10 +179,10 @@ teaches something the goal names, not because the diagram needed a box.
 
 | Service | Role in the platform | What it teaches |
 |---|---|---|
-| VPC, one public subnet | Phase A's network: both boxes. Private subnets and a NAT come back when Fargate jobs or DefectDojo need them | Subnet as a routing fact, not a label |
+| VPC, one public subnet | Phase A's network: both boxes. Private subnets and a NAT come back when Fargate jobs or SecObserve need them | Subnet as a routing fact, not a label |
 | Route tables, IGW | The boxes reach Tailscale, packages and images through the internet gateway, with no NAT | The public/private split *is* the route table, and a public subnet with no inbound rule is still closed |
 | **Security groups** | One per box, with no inbound rules and egress written out. Access between boxes is the tailnet policy's job, not the security groups' (D10) | A group as a label, default-deny ingress, and what a group cannot express (identity) |
-| EC2 | The instance, as Precogly's guide deploys it (D9); the scanner box (D12); DefectDojo until Phase D | User data, instance profiles, IMDSv2, what a box needs to come up unattended |
+| EC2 | The instance, as Precogly's guide deploys it (D9); the scanner box (D12); SecObserve until Phase D | User data, instance profiles, IMDSv2, what a box needs to come up unattended |
 | **Terraform modules and per-instance state** | The instance stack, called once per instance | Base/instance layering, state isolation, safe create and destroy |
 | ECS / Fargate | Every scan job | Task definitions, ephemeral vs. service, task networking |
 | Step Functions | The scan workflow: fan out, wait, collect | Orchestration, Map state, retry/catch |
@@ -191,12 +190,12 @@ teaches something the goal names, not because the diagram needed a box.
 | SQS | Backpressure between trigger and workflow (added when concurrency matters) | Queues, retries, DLQs |
 | S3 | Raw scanner output per run | Object storage, lifecycle, prefix-scoped access |
 | **IAM task roles** | Each job gets only what it needs: its S3 prefix, its secrets, nothing else | Least privilege as a control, an AppSec lesson delivered as an AWS one |
-| **ALB (L7)**, RDS, ElastiCache | DefectDojo when it goes native in Phase D (D1). No instance uses them | Load-balancer routing and managed data services, on the one service that is AWS-shaped |
-| Secrets Manager | DefectDojo API token, each instance's `SECRET_KEY` and database password, provider keys for the AI jobs | Secret handling without baking into images or user data |
+| **ALB (L7)**, RDS | SecObserve when it goes native in Phase D (D1). No instance uses them | Load-balancer routing and managed data services, on the one service that is AWS-shaped |
+| Secrets Manager | SecObserve upload token, each instance's `SECRET_KEY` and database password, provider keys for the AI jobs | Secret handling without baking into images or user data |
 
 The ALB moved. Until 2026-10-13 it fronted the target, and teaching load balancers was
 the target's job. A target deployed the way Precogly documents has no load balancer, so
-that lesson now comes from DefectDojo in Phase D. Phase A teaches less AWS than it did.
+that lesson now comes from SecObserve in Phase D. Phase A teaches less AWS than it did.
 That is the cost of R2.
 
 ## Decisions
@@ -205,6 +204,9 @@ Each names what was chosen, what was rejected, and what disqualified it, so the
 alternatives are not re-derived later.
 
 ### D1 — DefectDojo hosting: native, with an EC2-compose start
+
+**Superseded 2026-10-17 by D14**, which replaced DefectDojo with SecObserve on one EC2.
+The staging argument below still holds for SecObserve: Phase D moves it to ECS and RDS.
 
 **Chosen:** start on a single EC2 running DefectDojo's own docker-compose, then migrate
 to ECS Fargate + RDS Postgres + ElastiCache Redis behind an internal ALB as a
@@ -249,10 +251,10 @@ Terraform→DFD component-resolution work
 ([#294](https://github.com/precogly/precogly/issues/294)), which today has none — the
 only corpus is docker-compose, 0% of which resolves. Two efforts feed each other.
 
-### D4 — Aggregation: DefectDojo, no custom store
+### D4 — Aggregation: the findings store, no custom store
 
 Settled above and restated as a decision because it is the one most likely to erode.
-DefectDojo is the findings sink. The collector imports; it does not aggregate. No
+SecObserve is the findings sink (D14; DefectDojo until 2026-10-17). The collector imports; it does not aggregate. No
 findings table, no dedup logic, no triage UI is written here. See the anti-goal.
 
 ### D5 — Access paths: an internal ALB in Phase A, a tunnel for DefectDojo
@@ -588,8 +590,8 @@ needs no IAM identity to run a scan.
 - R6 is not met. The box has internet egress, which an agent needs to reach its model
   API, and nothing stops it reaching any other internet host. On the tailnet it reaches
   only `tag:precogly` on 443.
-- No DefectDojo yet. Findings stay as tool output on the box until Phase B adds the
-  collector.
+- `lab` uploads each run's reports to SecObserve from this box (D14), so it holds
+  an upload token beside untrusted code. Phase B moves the upload to a collector.
 - One more machine to patch and pay for. Neither box's size has been checked against
   what the scanners need; stop both when idle.
 
@@ -680,209 +682,184 @@ run, with nothing stored between runs.
   backend image at `94dd831` (2026-10-17), finding 366 `api/` routes, of which 172
   are DRF's `.{format}` copies and 194 are real, 112 of them taking parameters.
 
-### D14 — One run path: a job contract, a `lab` CLI, and DefectDojo as the record
+### D14 — One run path: a job contract, a `lab` CLI, and SecObserve as the record
 
 **Chosen:** every scanner, the cross-tenant harness included, is a job with one
 contract. One command, `lab`, runs any job on the scanner box, and its last step
-reimports the job's report into DefectDojo. DefectDojo is the record of findings and of
-how they change over time; the lab stores no findings of its own. DefectDojo moves
-from Phase B into Phase A for this.
+uploads the job's report to [SecObserve](https://github.com/SecObserve/SecObserve).
+SecObserve is the record of findings and of how they change over time; the lab stores
+no findings of its own. Until 2026-10-17 the record was DefectDojo; why it changed is
+under the rejected alternatives.
 
 ```text
   person ── ssh ubuntu@scanner ──► lab run <job> [--all]
                                      │
        1. resolve: SHA from SSM (D13), target URL, credentials
        2. run the job's container:  inputs in env, report out to a directory
-            runs/<run-id>/<job>/report.<ext>   tool's native format, unparsed
+            runs/<run-id>/<job>/report.<ext>   in a format SecObserve parses
             runs/<run-id>/<job>/meta.json      job, tool version, SHA, times, exit
-       3. reimport the report into the job's one Test in DefectDojo
+       3. upload the report to SecObserve, as the job's vulnerability check
                                      │
                                      ▼
-  DefectDojo (tag:defectdojo):  Product "Precogly"
-                                └─ Engagement "lab: pentest" (one, long-lived)
-                                   ├─ Test "zap"      ◄── reimported every run
-                                   ├─ Test "harness"  ◄── reimported every run
-                                   └─ Test "trivy"    ◄── reimported every run
+  SecObserve (tag:secobserve):  Product "Precogly", branch "main"
+                                ├─ service "semgrep"         ◄── uploaded every run
+                                ├─ service "trivy-backend"   ◄── uploaded every run
+                                └─ service "zap-baseline"    ◄── uploaded every run
 ```
 
 The contract a job implements:
 
 - **Inputs**, as environment variables: `TARGET_URL`, `PRECOGLY_SHA`, `RUN_ID`,
   `OUT_DIR`, and a path to a credentials file holding the seed's logins.
-- **Outputs**: one report in the tool's own format, and nothing else. `lab` writes
-  `meta.json`; the job does not.
-- **Its definition**, one small file per job: name, image, command, DefectDojo
-  `scan_type`, report filename. Adding a tool is adding one definition. Tools and
-  targets are combined by `lab`, so N tools and M targets are N + M definitions, never
-  N × M scripts.
+- **Outputs**: one report, and nothing else. `lab` writes `meta.json`; the job does not.
+- **Its definition**, one small file per job. Adding a tool is adding one definition.
+  Tools and targets are combined by `lab`, so N tools and M targets are N + M
+  definitions, never N × M scripts.
+- **The report's format** is one SecObserve parses, chosen by what the finding is
+  about. SecObserve detects the parser from the file, so a job names no parser.
+  - Code (Semgrep, the harness): SARIF.
+  - Images (Trivy): CycloneDX. SARIF cannot say which package in an image a finding
+    is in: every result points at the image itself, and SecObserve merges results
+    with the same rule and location. Uploaded as SARIF, Trivy's 787 findings for the
+    backend image became 157 observations; as CycloneDX, 786 (spike, 2026-10-17).
+  - ZAP: its traditional JSON report.
 
 The model, and why it is shaped this way:
 
-- **One Test per job, reimported every run, never a new Test per run.** Reimport
-  compares the new report with what the Test holds: findings no longer reported are
-  closed, returning ones are reactivated, new ones are created, and matching ones are
-  left alone ([DefectDojo: reimport](https://docs.defectdojo.com/import_data/import_intro/reimport/),
-  read 2026-10-17). Each reimport is recorded in the Test's Import History, with counts
-  of findings created, closed, left untouched and reactivated, and a commit hash, build
-  ID and version. That history is the time series: one row per run per job, and each
-  finding carries its own open and close dates. A Test per run would make every run's
-  findings new rows, and "the same finding in two runs" would rest on deduplication
-  settings rather than on the reimport's matching.
-- **`lab` sets the reimport fields from the run:** `commit_hash` = the SHA, `build_id`
-  = the run ID, `version` = the tool's version, `scan_date` = the run's date. A point on
-  a chart can then be traced to a commit and a tool version.
-- **A finding must have the same identity in every run.** Reimport matches findings
+- **One vulnerability check per job.** SecObserve groups an upload by product, branch,
+  service and file name, and calls that a vulnerability check. `lab` uploads each job
+  as its own service on branch `main`, so each job is one check, uploaded every run.
+  An upload compares the report with what the check holds: findings no longer reported
+  become Resolved, new ones are created, and matching ones are updated. On the spike,
+  a second upload of the same reports gave 0 new, every finding updated, 0 resolved.
+- **The time series is SecObserve's.** Each observation carries when it was created
+  and last seen, and SecObserve keeps daily product metrics: its dashboard charts
+  severities over the last seven days, and `api/metrics/product_metrics_timeline/`
+  serves the history behind longer charts.
+- **`lab` labels each upload with the run:** the image name and tag for image scans
+  (`precogly-backend:<sha>`, through `docker_image_name_tag`), so an image finding
+  names the commit it was built from. The scanner's name and version come from the
+  report itself.
+- **A finding must have the same identity in every run.** An upload matches findings
   between runs, so a job whose titles or locations vary between runs (a timestamp, an
-  object ID from the seed) reports every finding as closed and new again on every run.
-  Native parsers handle this for their own tools. The harness writes DefectDojo's
-  generic findings format with a stable `unique_id_from_tool` per route and method,
-  never per object ID, since the seed's IDs change on every rebuild of the instance.
-- **What a count means is fixed here.** "Findings at run R" for a job is the Test's
-  active, non-duplicate findings after R's reimport, excluding those marked false
-  positive or risk accepted. A chart that moves for any other reason is misleading.
+  object ID from the seed) reports every finding as resolved and new again on every
+  run. `lab` rewrites container paths (`/in/precogly-source/...`) to repository paths
+  before upload, so a path never depends on where the source was mounted. The harness
+  keys its findings by route and method, never by object ID, since the seed's IDs
+  change on every rebuild of the instance.
+- **What a count means is fixed here.** "Findings at run R" for a job is its check's
+  Open observations after R's upload, excluding those assessed as false positive, not
+  affected or risk accepted. A chart that moves for any other reason is misleading.
 - **One run path.** Jobs run only through `lab`, only on the scanner box. People reach
-  it over Tailscale SSH. A scan run any other way does not reach DefectDojo, so a laptop
-  run is a test of the job, not a run.
+  it over Tailscale SSH. A scan run any other way does not reach SecObserve, so a
+  laptop run is a test of the job, not a run.
 
+- **Rejected: DefectDojo**, the record from the start of Phase A until 2026-10-17. It
+  worked, with backups and a tested restore, but most of it went unused (product
+  types, engagements, SLAs, JIRA, benchmarks, surveys), and it took a `t3.large`,
+  Celery, Valkey and five containers. SecObserve did what the lab used DefectDojo for,
+  on the same data, in four containers using about 600 MB with a thousand findings
+  loaded (spike, 2026-10-17), and added a time-series chart and licence tracking.
+- **Rejected: GitHub code scanning** (D15): the upload token would reach Precogly's
+  real repository.
 - **Rejected: a custom app to run scans and track findings.** A findings store, dedup
-  and a triage UI are DefectDojo, and the first anti-goal names building them as the
-  failure.
-- **Rejected: secureCodeBox**, OWASP's scan orchestrator, which gives scanners a uniform
-  interface and feeds DefectDojo. It runs on Kubernetes only ([installation
-  docs](https://www.securecodebox.io/docs/getting-started/installation), read
-  2026-10-17), and a cluster is a larger system than the two boxes it would run scans
-  between.
-- **Rejected: keeping DefectDojo in Phase B.** Without it, findings stay as files on the
-  scanner box, and comparing runs means diffing reports by hand, which is the problem
-  this decision exists to remove.
-- **Rejected: the lab's own time-series store**, counts written per run to a table or
-  CSV. Import History already records per-run counts against a commit; a second copy
-  would disagree with DefectDojo the first time a finding is triaged there.
+  and a triage UI are solved upstream, and the first anti-goal names building them as
+  the failure.
+- **Rejected: secureCodeBox**, OWASP's scan orchestrator. It runs on Kubernetes only
+  ([installation docs](https://www.securecodebox.io/docs/getting-started/installation),
+  read 2026-10-17), a larger system than the boxes it would run scans between.
+- **Rejected: the lab's own time-series store.** SecObserve keeps the history; a
+  second copy would disagree with it the first time a finding is assessed there.
 
 **What it costs.**
 
-- A third box. DefectDojo runs from its own compose file on EC2, joined to the tailnet
-  as `tag:defectdojo`; its size is not yet checked against DefectDojo's requirements.
-  It is not a target, so `tailscale serve` can front it (D11 rejected that only for
-  the target, where it would change what scanners measure).
-- The policy grows: people → `tag:defectdojo` on 443, and `tag:scanner` →
-  `tag:defectdojo` on 443 for the reimport.
-- `lab` runs beside untrusted jobs on the scanner box and holds a DefectDojo API token.
-  An agent that takes over the box can falsify that Product's findings, though not
-  delete them. The token belongs to `lab`, a DefectDojo user that is neither staff nor
-  superuser and is a member of the one Product. In DefectDojo 3.4.101's open-source
-  authorization, roles are inert labels: a non-staff member of a Product's
-  `authorized_users` may view, add, edit and import on it and everything under it, and
-  deleting anything takes staff (`dojo/authorization/authorization.py`, read
-  2026-10-17). The design until 2026-10-17 kept this apart (a collector that never runs
-  next to a scan job), and Phase B restores it by moving the reimport to the collector.
-- The DefectDojo box creates `lab`, its token, the Product and the Engagement itself, at
-  every first boot, idempotently, and writes the token to a secret only the scanner
-  box's role can read. After a restore they come back from the dump and the step finds
-  them in place. Rejected: a `lab init` a person runs with the admin password, which is
-  easier to test but puts that password on the scanner box beside untrusted agents.
-- Counts move for reasons other than the code: a new tool version, a new rule pack, a
-  change to DefectDojo's dedup settings. The version is in each history row so a chart
-  can mark those, but nothing stops them.
-- Run artifacts live on the scanner box's disk and go when it is replaced. DefectDojo
+- **A small project.** SecObserve had 323 stars and has been maintained mostly by one
+  person since December 2025 (checked 2026-10-17). If it stalls, the lab migrates
+  again. Reports in standard formats (SARIF, CycloneDX) keep that move cheap.
+- A third box, joined to the tailnet as `tag:secobserve`, fronted by `tailscale serve`.
+  It is not a target, so `tailscale serve` changes nothing anyone measures (D11
+  rejected it only for the target). The policy grants people 443 on it, and the
+  scanner box 443 for uploads.
+- `lab` runs beside untrusted jobs and holds a product API token with SecObserve's
+  Upload role, which may import observations and nothing else: not view, edit, assess
+  or delete (`docs/usage/users_permissions.md`, v1.61.0). A compromised scanner box
+  can upload a misleading report, which resolves findings the report omits, but cannot
+  read or edit the record. The SecObserve box creates the product and the token at
+  first boot and writes the token to a secret only the scanner box can read.
+- Counts move for reasons other than the code: a new tool version, a changed rule
+  pack, a new vulnerability database. The scanner version is on every observation so
+  a chart can mark those, but nothing stops them.
+- Run artifacts live on the scanner box's disk and go when it is replaced. SecObserve
   keeps the findings and the history. Raw reports move to S3 in Phase B.
-- Not checked: whether DefectDojo's own metrics pages chart a Test's history over time,
-  or whether that chart is a small page reading the API. Either way the data is
-  DefectDojo's; the chart is deferred until there are runs to plot.
 
-**Getting findings out: `lab findings`** (added 2026-10-17). The core team reads
-DefectDojo, and triage is increasingly done with an AI agent, which needs the
-findings as a file rather than a UI.
+**Getting findings out: `lab findings`.** The core team reads SecObserve, and triage is
+increasingly done with an AI agent, which needs the findings as a file rather than a UI.
 
 ```text
-lab findings -o findings.json            # active findings, every job
+lab findings -o findings.json            # open findings, every job
 lab findings --job semgrep -o sast.json  # one job
 ```
 
-- **It reads DefectDojo, not raw reports**, so the export is the deduplicated record
-  with the team's triage applied. "Active" is the count definition above: active, and
-  not duplicate, false positive or risk accepted.
-- **It runs on any machine on the tailnet**, with the person's own DefectDojo API key
-  in `DEFECTDOJO_TOKEN`. It needs no AWS access, no Docker and no scanners; those stay
+- **It reads SecObserve, not raw reports**, so the export is the deduplicated record
+  with the team's assessments applied, using the count definition above.
+- **It runs on any machine on the tailnet**, with the person's own SecObserve API token
+  in `SECOBSERVE_TOKEN`. It needs no AWS access, no Docker and no scanners; those stay
   on the scanner box. `lab run` refuses to run anywhere `/var/lib/lab` does not exist,
   since only the scanner box's first boot creates it; `--dry-run` works anywhere.
-- **The agent never holds a credential.** It reads a file. Pointing it at DefectDojo's
-  API instead would hand it a token that can also change triage state.
-- **A small, versioned schema**, not DefectDojo's 91 fields per finding: id, a link to
-  the finding in DefectDojo, job, severity, title, CWE, CVEs, component and version,
-  path and line, the commit scanned, first seen, description and mitigation. Paths are
-  rewritten from the container's (`/in/precogly-source/...`) to the Precogly
-  repository's, so an agent can open the code at the commit given.
-- **DefectDojo ignores filters it does not know, silently** (checked on 2026-10-17: a
-  made-up filter, and `test__title`, both returned all 839 findings). A misspelt filter
-  would export everything. So the export uses only filters verified by flipping them
-  (`active`, `duplicate`, `false_p`, `risk_accepted`, `test`, `engagement`, and `name`
-  on engagements), and checks every returned finding against them anyway.
-- Not built: writing triage back. The agent proposes, a person records the decision in
-  DefectDojo. A `lab triage` that applies a decisions file would need write access, so
-  it is a separate decision.
+- **The agent never holds a credential.** It reads a file. Pointing it at the API
+  instead would hand it a token that can also change assessments.
+- **A small, versioned schema**: id, a link to the observation, job, severity, title,
+  CWE, CVEs, component and version, path and line, the commit scanned, first seen,
+  description. Paths are repository paths, so an agent can open the code at the
+  commit given.
+- DefectDojo ignored query filters it did not know, silently, so a misspelt filter
+  exported everything. Whether SecObserve's API does the same is not yet checked; every
+  filter `lab findings` relies on is verified by flipping it before it is relied on.
+- Not built: writing assessments back. The agent proposes, a person records the
+  decision in SecObserve. Applying a decisions file would need write access, so it is
+  a separate decision.
 
-**Keeping the record across a replacement.** DefectDojo's database is the whole record,
-and it lives on the box's root volume, so replacing the box (an OS patch, a changed
-user data) would delete every finding and the time series with it. Chosen: a nightly
-`pg_dump` to S3, and a restore at first boot.
+**Keeping the record across a replacement.** SecObserve's database is the whole
+record, and it lives on the box's root volume, so replacing the box would delete every
+finding and the history with it. Chosen: a nightly `pg_dump` to S3, and a restore at
+first boot.
 
-- **Backup:** a systemd timer on the box dumps the database, gzipped, to
+- **Backup:** a systemd timer dumps the database, gzipped, to
   `s3://<bucket>/pg/<UTC timestamp>.sql.gz`. The bucket is versioned, private and
-  encrypted, and a lifecycle rule expires dumps after 30 days (arbitrary).
-- **Restore:** at first boot, if the bucket holds a dump, the box starts Postgres alone,
-  loads the newest dump, then starts the rest. The initializer finds the admin user
-  already present, skips first-boot setup and prints no password, so the password in
-  the admin secret stays the right one. A dump from an older DefectDojo release is
-  migrated forward by the initializer.
+  encrypted, and expires dumps after 30 days (arbitrary).
+- **Restore:** at first boot, if the bucket holds a dump, the box starts Postgres
+  alone, loads the newest dump, then starts the rest.
+- **The keys travel with the data.** SecObserve encrypts some stored fields with
+  `FIELD_ENCRYPTION_KEY`, and a restored database is unreadable under a new one. The
+  first box saves that key and the Django secret key to Secrets Manager; every later
+  box restores them. API tokens are stored as hashes and survive regardless.
 - **The box's role** may put and get objects under `pg/` and list the bucket, and
   nothing else. Without `s3:DeleteObject`, and with versioning on, a compromised box
   can add bad dumps but cannot remove good ones.
-- **Rejected: `prevent_destroy` on the instance.** One line, and it stops an accidental
-  replacement, but a deliberate one still deletes everything.
-- **Rejected: a separate EBS volume** for Docker's data. Survives a replacement with no
-  restore step, but the first boot must tell a new volume from a used one, and the
-  volume is lost with the AZ or an accidental `terraform destroy`, which the bucket is
-  not.
+- **Rejected: `prevent_destroy` on the instance**, which stops an accidental
+  replacement but not a deliberate one; and **a separate EBS volume**, which an
+  accidental `terraform destroy` takes with the box.
+- Costs: up to a day of findings lost on a replacement, the time since the last dump
+  (`sudo systemctl start secobserve-backup` first closes the gap); and the restore is
+  code that runs rarely, so it is tested by a deliberate replacement once findings
+  exist.
 
-What it costs:
-
-- Up to a day of findings and history is lost on a replacement: whatever happened since
-  the last dump. Run `sudo systemctl start defectdojo-backup` before a planned
-  replacement to close the gap.
-- Uploaded files (`defectdojo_media`) are not in the dump. Reports can be re-uploaded
-  from their run directories; nothing else is stored there.
-- `DD_CREDENTIAL_AES_256_KEY` is generated per box, so anything DefectDojo encrypts
-  with it (stored tool credentials) does not decrypt after a restore. The lab stores
-  none: `lab` authenticates with an API token, which is a plain database row and
-  survives. Store the key in Secrets Manager if that changes.
-- A restore is code that runs rarely, so it rots unnoticed. Tested once on 2026-10-17
-  by replacing the box: the Product, the Engagement, `lab`'s membership and its token
-  came back, and the old admin password still authenticated. Not yet tested with
-  findings and import history in the dump; repeat after the first real runs.
-
-**Job definitions and the CLI** (proposed 2026-10-17; revised after review: inputs
-replace a special image name, and `--check` replaces any way of importing a
-development run).
+**Job definitions and the CLI.**
 
 A job is a TOML file in `lab/src/lab/jobs/`, inside the package so that
 `uv tool install` ships it, read with the standard library's `tomllib` into a frozen
 dataclass that rejects unknown keys. Data, not code: a job that needs logic ships it
 in its image or its assets, so `lab` stays the one place that runs things.
 
-`scan_type` is an enum, `lab.job.ScanType`, whose members are DefectDojo's parser
-names copied from `dojo/tools/*/parser.py` at the deployed release, so a misspelt
-parser fails at load rather than at reimport. `--check` looks the name up in the
-deployed DefectDojo, which catches a parser renamed in an upgrade.
-
 ```toml
-# lab/src/lab/jobs/zap-baseline.toml
-name      = "zap-baseline"
-image     = "ghcr.io/zaproxy/zaproxy:2.17.0"     # a tag, never `latest`
-out_mount = "/zap/wrk"                           # ZAP writes reports only here
-command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "report.xml"]
-report    = "report.xml"                         # relative to out_mount
-scan_type = "ZAP Scan"                           # DefectDojo's parser name
+# lab/src/lab/jobs/trivy-backend.toml
+name      = "trivy-backend"
+image     = "aquasec/trivy:0.76.0"               # a tag, never `latest`
+inputs    = ["precogly-images"]                  # mounted read-only under /in
+command   = ["image", "--input", "/in/precogly-images/backend.tar",
+             "--scanners", "vuln", "--format", "cyclonedx",
+             "--output", "/out/report.cdx.json"]
+report    = "report.cdx.json"                    # relative to /out
 timeout   = "30m"
 ```
 
@@ -890,21 +867,10 @@ timeout   = "30m"
 # lab/src/lab/jobs/harness.toml
 name      = "harness"
 image     = "@precogly-backend"    # "@": from this run's inputs, not a registry
+inputs    = ["precogly-images"]
 command   = ["python", "/job/run.py"]
 assets    = "harness"              # lab/src/lab/harness, mounted read-only at /job
-report    = "findings.json"
-scan_type = "Generic Findings Import"
-```
-
-```toml
-# lab/src/lab/jobs/trivy-images.toml
-name      = "trivy-images"
-image     = "aquasec/trivy:0.76.0"
-inputs    = ["precogly-images"]    # mounted read-only under /in
-command   = ["trivy", "image", "--input", "/in/precogly-images/backend.tar",
-             "--format", "json", "--output", "/out/report.json"]
-report    = "report.json"
-scan_type = "Trivy Scan"
+report    = "findings.sarif"
 ```
 
 What `lab` gives every job container:
@@ -926,91 +892,69 @@ What `lab` gives every job container:
   run directory or `meta.json`. Handing a key to untrusted code is inherent to running
   an agent; the key should be one scoped to the lab, with a spending limit.
 - **`timeout`**, `"45m"` style, default `1h`, at most `12h` (both arbitrary). On
-  timeout `lab` kills the container by name and the run fails, so nothing is
-  reimported.
+  timeout `lab` kills the container by name and the run fails, so nothing is uploaded.
 - **Bridge network, never host.** Checked on the scanner box on 2026-10-17: a bridge
   container reached the target over the tailnet with `--add-host` and could not get a
   metadata token. With host networking it could, and the box's role reads `lab`'s
-  DefectDojo token.
+  upload token.
 - **One function builds every container**, `lab.container.run_args`, rather than an
   abstract job class. A subclass per tool could override how it runs, which is the
   per-tool scripting this decision removes. Every planned tool was checked against
   image + command + report: all fit, two of them once `secrets` existed. What
   will need an interface is the runner, local Docker now and Fargate in Phase B: a
   `Runner` protocol is added with its second implementation, not before.
-
 - **Inputs are what a job needs built from Precogly at the run's commit**, prepared by
-  `lab` once per run and cached by SHA, so three jobs needing the images cause one
+  `lab` once per run and cached by SHA, so several jobs needing the images cause one
   build:
   - `precogly-source`: the checkout, for SAST (Semgrep).
-  - `precogly-images`: the backend and frontend images, loaded into Docker and saved
-    as `backend.tar` and `frontend.tar`, for image scanning (`trivy image --input`,
-    checked at v0.76.0).
+  - `precogly-images`: the backend and frontend images, saved as `backend.tar` and
+    `frontend.tar`, for image scanning (`trivy image --input`, checked at v0.76.0).
 
-  Of the jobs the phases plan, three need an input: the harness, Trivy and Semgrep.
-  ZAP, Schemathesis, garak or promptfoo, and the AI agent need only the target. An
-  image named `@<name>` is one of a run's built images rather than a registry image:
+  An image named `@<name>` is one of a run's built images rather than a registry image:
   the harness runs in `@precogly-backend` for the route walk, and running the replayer
-  in the same container keeps the harness one job with one report. The replayer uses
-  only the standard library, so the image needs nothing added.
-- **A target is a TOML file too**, `lab/src/lab/targets/pentest.toml`: URL and the seed's
-  logins. The logins are the seed's published constants, so they are not secrets.
-  Jobs and targets combine at run time, which is what makes it N + M files.
+  in the same container keeps the harness one job with one report.
+- **A target is a TOML file too**, `lab/src/lab/targets/pentest.toml`: URL and the
+  seed's logins. The logins are the seed's published constants, so they are not
+  secrets. Jobs and targets combine at run time, which is what makes it N + M files.
 - **Success is "the report exists and is not empty", not the exit code.** Many
   scanners exit non-zero when they find something: `zap-baseline.py` at v2.17.0 exits
   1 for at least one FAIL, 2 for warnings only, and 3 for any other failure. The exit
-  code is recorded in `meta.json`; a 3 with no report is a failed run by the rule
-  below, not by the code.
-- **A failed job is never reimported.** Reimport closes every finding missing from the
-  report, so reimporting an empty or truncated report from a crashed run would close a
-  Test's whole history. No report, no reimport, and the run is marked failed.
+  code is recorded in `meta.json`.
+- **A failed job is never uploaded.** An upload resolves every finding missing from the
+  report, so uploading an empty or truncated report from a crashed run would resolve a
+  job's whole history. No report, no upload, and the run is marked failed.
 - **Run ID** is `<UTC timestamp>-<first 7 of the SHA>`, for example
   `20261017T163000Z-94dd831`, to the second so two runs in one minute do not collide.
-  Run directories live at `/var/lib/lab/runs/<run-id>/<job>/`
-  on the scanner box.
-- **The reimport** sends `scan_type`, `product_name=Precogly`,
-  `engagement_name=lab: pentest`, `test_title=<job name>`, `auto_create_context=true`,
-  `close_old_findings=true`, `commit_hash=<SHA>`, `build_id=<run ID>`,
-  `version=<image tag>` and `scan_date=<run date>`.
+  Run directories live at `/var/lib/lab/runs/<run-id>/<job>/` on the scanner box.
 
 The CLI, kept small on purpose:
 
 ```text
 lab jobs                       list job definitions, and fail on any that do not load
-lab run <job>... [--all]       run jobs against the target, then reimport each report
-lab run <job> --check          run the job twice, parse both reports offline, import nothing
-lab run <job> --dry-run        print the resolved image, command, mounts and env; run nothing
+lab run <job>... [--all]       run jobs against the target, then upload each report
+lab run <job> --check          run the job twice, parse both reports offline, upload nothing
+lab run <job> --dry-run        read the real tailnet, address and commit; print every
+                               change a run would make; make none
+lab findings [-o FILE]         export open findings from SecObserve as JSON
 ```
 
-- **`--check` is how a job is developed.** It runs the job exactly as a real run would,
-  then parses each report with DefectDojo's own parser, at the deployed release,
-  offline: a throwaway container of DefectDojo's image with networking off, reading
-  `dojo.tools.factory.PARSERS` directly. `get_parser()` would add a database lookup
-  only to check the parser is active. It prints the findings, and fails if any
-  finding's identity differs between the two runs, which is the "same identity in
-  every run" rule above made into a test. Checked on 2026-10-17: the generic parser
-  parsed and hashed findings with no database and no network.
-- **Why not import development runs somewhere separate.** A scratch Engagement was
-  considered: it would test the parse too, but its results would pile up where `lab`
-  cannot delete them, and a run that does not count is a tempting way round the one
-  that does. `--check` records nothing anywhere, so there is nothing to clean up and
-  nothing to misuse.
-- **The parser's version has to be the deployed one**, or `--check` tests a different
-  parser. Terraform publishes `defectdojo_version` to an SSM parameter, as it does the
-  SHA, and `--check` pulls that image.
-- Not yet checked: that every parser runs without a database. A parser that queries one
-  makes `--check` fail with a database error rather than pass. Check each when its job
-  is added; ZAP's and Trivy's come first.
-- **No `--no-import` flag.** A run that skips DefectDojo but counts as a run is the
-  second run path D14 exists to prevent; `--check` does not count as a run.
+- **`--check` is how a job is developed:** run the job as a real run would, parse each
+  report with SecObserve's own parser at the deployed release, offline, and fail if any
+  finding's identity differs between two runs, which is the "same identity in every
+  run" rule made into a test. Not yet checked: whether SecObserve's parsers run without
+  a database. A scratch product that development runs upload to was rejected: its
+  results would pile up, and a run that does not count is a tempting way round the one
+  that does.
+- **No `--no-import` flag.** A run that skips SecObserve but counts as a run is the
+  second run path this decision exists to prevent; `--check` does not count as a run.
 - **One target for now**, `pentest`, so no `--target` flag until a second exists.
 - **Install:** the scanner box installs `lab` from
   `github.com/precogly/precogly-security-lab` at a commit, with `uv tool install`.
 
 ### D15 — GitHub code scanning as the record: tried, and rejected
 
-**Rejected** (2026-10-17), after a trial; DefectDojo stays the record in D14 for now,
-and SecObserve is being tried next.
+**Rejected** (2026-10-17), after a trial. SecObserve, tried next, became the record
+(D14).
 
 The idea was to upload each job's report as SARIF to code scanning on
 `precogly/precogly`, where Precogly already uploads OpenSSF Scorecard results, and
@@ -1053,7 +997,7 @@ AppSec plan). Building it is the point; the agent is the pretext.
 
 ### LLM triage over aggregated findings
 
-Phase 6b of the AppSec plan. After DefectDojo dedups, an LLM reads the findings against a
+Phase 6b of the AppSec plan. After SecObserve dedups, an LLM reads the findings against a
 threat model of Precogly and rates severity *in context*, flags likely false positives,
 and clusters related findings. Runs as a small job after the collector. Reuses Precogly's
 existing BYOM stack, so it is provider-agnostic. This is the high-signal, low-hype use of
@@ -1087,10 +1031,10 @@ defect end to end.**
    following Precogly's AWS guide with D9's departures, seeded with at least two
    tenants; the scanner box (D12). Each box has its own empty auth-key secret, IMDSv2
    only, and SSM.
-3. DefectDojo on its own EC2 via compose, joined to the tailnet as `tag:defectdojo`,
-   with one Product, one long-lived Engagement, and one Test per job (D14).
+3. SecObserve on its own EC2 via compose, joined to the tailnet as `tag:secobserve`,
+   with one product, branch `main`, and one service per job (D14).
 4. `lab`, the one run path (D14): the job contract, a job definition per tool, and
-   reimport into DefectDojo as each run's last step.
+   the upload to SecObserve as each run's last step.
 5. The custom cross-tenant harness (D13) as the first job: the route walk and the
    replayer, with `main` resolved to a SHA at plan time and published to an SSM
    parameter only Terraform writes.
@@ -1098,23 +1042,23 @@ defect end to end.**
 Done when the harness finds [#226](https://github.com/precogly/precogly/issues/226),
 [#227](https://github.com/precogly/precogly/issues/227), or
 [#405](https://github.com/precogly/precogly/issues/405) through `lab`, as a finding in
-DefectDojo. These are open, so the thread proves itself against real positives, not a
+SecObserve. These are open, so the thread proves itself against real positives, not a
 predicted clean pass.
 
 **Phase B — the platform.** Private subnets and a NAT; jobs as Fargate tasks under the
-same contract (D14), writing to S3; a small collector that does the reimport, taking
-the DefectDojo token off the scanner box; the instance becomes a module created by
+same contract (D14), writing to S3; a small collector that does the upload, taking
+the upload token off the scanner box; the instance becomes a module created by
 name (D8). Then replace the manual trigger with Step Functions + EventBridge and add
 fan-out with a second scanner (Trivy is cheapest — container CVEs on the images). Now
 the Map state, retries, and parallel collection are exercised. A second instance for
 feature testing (such as #585) needing only another module call is the test of D8.
 
 **Phase C — more coverage.** Semgrep (SAST), ZAP (authenticated DAST), Schemathesis (API
-fuzz). Each is one job and one DefectDojo scan type; Schemathesis needs its output
-converted first, since DefectDojo has no parser for it.
+fuzz). Each is one job in a format SecObserve parses; Schemathesis needs its output
+converted to SARIF first, since SecObserve has no parser for it.
 
-**Phase D — DefectDojo goes native.** Migrate from EC2-compose to ECS + RDS + ElastiCache
-+ internal ALB. The migration is the lesson (D1).
+**Phase D — SecObserve goes native.** Migrate from EC2-compose to ECS + RDS + internal
+ALB. The migration is the lesson (D1).
 
 **Phase E — the AI layer.** The sandboxed agent job and its isolation, then the LLM triage
 stage, then the AI red-team job.
@@ -1124,8 +1068,8 @@ stage, then the AI red-team job.
 - **Cost is real and ongoing.** Phase A is two boxes and two public IPv4 addresses
   (~$3.60/mo each), and nothing else stands: both boxes can be stopped. The instance is
   a `t3.medium` in the guide; the scanner box's size is not chosen. From Phase B the
-  NAT and DefectDojo stand all the time, and a forgotten instance is the likeliest
-  surprise on the bill. The reaper (R5) is the mitigation. Native DefectDojo (Phase D)
+  NAT and SecObserve stand all the time, and a forgotten instance is the likeliest
+  surprise on the bill. The reaper (R5) is the mitigation. Native SecObserve (Phase D)
   is a standing cost that does not tear down. The ~$75–150/mo figure predates the
   base/instance split and has not been redone.
 - **Phase A teaches little AWS.** One public subnet, two EC2s, security groups with no
@@ -1145,17 +1089,17 @@ stage, then the AI red-team job.
 The headline bullet, defensible cold: *built a security orchestration platform on AWS
 (Fargate, Step Functions, SQS, S3, per-job IAM) that fans out SAST/DAST/SCA and custom
 authz/OAuth/SSRF pentest jobs against a self-hosted target and lands normalized findings in
-DefectDojo.*
+SecObserve.*
 
 Sub-claims each phase unlocks:
 
 - **A** — zero-ingress access through a tailnet with tag-based policy, a target
   deployed unattended from Precogly's own guide, an isolated scanner and agent box, the
   first real finding.
-- **B** — VPC design with private subnets, ECS/Fargate jobs, DefectDojo integration,
+- **B** — VPC design with private subnets, ECS/Fargate jobs, SecObserve integration,
   Terraform modules with per-instance state, Step Functions orchestration, EventBridge,
   parallel fan-out with retry.
-- **C** — SAST/DAST/SCA operated as automated jobs; DefectDojo integration.
+- **C** — SAST/DAST/SCA operated as automated jobs; SecObserve integration.
 - **D** — ALB, RDS, ElastiCache, a live migration, service-to-service IAM and SGs.
 - **E** — "isolation layer to run agents safely," AI security, LLM-assisted triage.
 
@@ -1183,6 +1127,14 @@ they did not — the same discipline the AppSec plan holds itself to.
   sandbox is designed first, the agent chosen second.
 
 ## Log
+
+- **2026-10-17 (SecObserve)** — D14 rewritten: SecObserve replaces DefectDojo as the
+  record. DefectDojo worked but was mostly unused weight. GitHub code scanning was
+  tried and rejected (D15) for putting a write token to Precogly's repository on the
+  scanner box. A spike ran SecObserve on the same reports: the lifecycle matched
+  (second upload: 0 new, all updated, 0 resolved), it charts severities over time,
+  and its Upload role can only import. It showed that image scans must be CycloneDX:
+  as SARIF, 787 per-package findings merged into 157.
 
 - **2026-10-17 (DefectDojo backups)** — D14 gains "Keeping the record across a
   replacement". Writing the DefectDojo box showed its database, and so the whole time
