@@ -23,6 +23,8 @@ FQDN="${tailscale_hostname}.${tailnet_domain}"
 DEFECTDOJO_VERSION="${defectdojo_version}"
 # shellcheck disable=SC2154
 BACKUP_BUCKET="${backup_bucket}"
+# shellcheck disable=SC2154
+LAB_TOKEN_SECRET="${lab_token_secret}"
 
 APP=/opt/defectdojo
 
@@ -158,6 +160,54 @@ if [[ "$LATEST_DUMP" == None ]]; then
     --secret-string "$ADMIN_PASSWORD" >/dev/null
   unset ADMIN_PASSWORD
 fi
+
+# The user `lab` reimports as, its Product and Engagement, and its token.
+# Idempotent, so it runs on a restored database too and finds them in place.
+# `lab` is a plain member of the Product: in this release that allows import
+# but not delete (dojo/authorization/authorization.py).
+LAB_TOKEN="$(docker compose exec -T uwsgi python manage.py shell <<'PY' | sed -n 's/^LAB_TOKEN=//p'
+import datetime
+
+from rest_framework.authtoken.models import Token
+
+from dojo.models import Dojo_User, Engagement, Product, Product_Type
+
+# Dojo_User, not auth's User: Product.authorized_users only accepts the proxy.
+user, created = Dojo_User.objects.get_or_create(
+    username="lab", defaults={"is_staff": False, "is_superuser": False}
+)
+if created:
+    user.set_unusable_password()
+    user.save()
+assert not user.is_staff and not user.is_superuser, "lab must stay a plain member"
+
+product_type, _ = Product_Type.objects.get_or_create(name="Lab")
+product, _ = Product.objects.get_or_create(
+    name="Precogly",
+    defaults={"prod_type": product_type, "description": "Precogly, as deployed by the lab."},
+)
+product.authorized_users.add(user)
+
+today = datetime.date.today()
+Engagement.objects.get_or_create(
+    product=product,
+    name="lab: pentest",
+    defaults={
+        "target_start": today,
+        "target_end": today.replace(year=today.year + 10),
+        "engagement_type": "CI/CD",
+        "status": "In Progress",
+    },
+)
+
+token, _ = Token.objects.get_or_create(user=user)
+print("LAB_TOKEN=" + token.key)
+PY
+)"
+[[ -n "$LAB_TOKEN" ]] || { echo "no token for lab; see the shell output above" >&2; exit 1; }
+aws secretsmanager put-secret-value --region "$REGION" --secret-id "$LAB_TOKEN_SECRET" \
+  --secret-string "$LAB_TOKEN" >/dev/null
+unset LAB_TOKEN
 
 # Nightly dump to S3. Keys sort by time, which the restore above relies on.
 cat > /usr/local/bin/defectdojo-backup <<BACKUP

@@ -21,6 +21,14 @@ resource "aws_secretsmanager_secret" "defectdojo_admin" {
   recovery_window_in_days = 0
 }
 
+# API token for `lab`, the plain Product member the scanner box reimports as.
+# Written by this box at first boot; read only by the scanner box.
+resource "aws_secretsmanager_secret" "defectdojo_lab_token" {
+  name                    = "${var.project}/defectdojo-lab-token"
+  description             = "DefectDojo API token for the lab user. Written by the DefectDojo box, read by lab on the scanner box."
+  recovery_window_in_days = 0
+}
+
 # Nightly database dumps, restored at first boot so a replacement keeps the
 # history. Bucket names are global, hence the account ID.
 data "aws_caller_identity" "current" {}
@@ -78,7 +86,8 @@ resource "aws_iam_role" "defectdojo" {
   })
 }
 
-# Its own auth key, read and overwrite; the admin password, write only.
+# Its own auth key, read and overwrite; the admin password and lab's token,
+# write only.
 resource "aws_iam_role_policy" "defectdojo_secrets" {
   name = "own-secrets"
   role = aws_iam_role.defectdojo.id
@@ -95,9 +104,12 @@ resource "aws_iam_role_policy" "defectdojo_secrets" {
         Resource = aws_secretsmanager_secret.defectdojo_authkey.arn
       },
       {
-        Effect   = "Allow"
-        Action   = "secretsmanager:PutSecretValue"
-        Resource = aws_secretsmanager_secret.defectdojo_admin.arn
+        Effect = "Allow"
+        Action = "secretsmanager:PutSecretValue"
+        Resource = [
+          aws_secretsmanager_secret.defectdojo_admin.arn,
+          aws_secretsmanager_secret.defectdojo_lab_token.arn,
+        ]
       },
     ]
   })
@@ -166,6 +178,7 @@ resource "aws_instance" "defectdojo" {
     authkey_secret_arn = aws_secretsmanager_secret.defectdojo_authkey.arn
     admin_secret_arn   = aws_secretsmanager_secret.defectdojo_admin.arn
     backup_bucket      = aws_s3_bucket.defectdojo_backups.id
+    lab_token_secret   = aws_secretsmanager_secret.defectdojo_lab_token.arn
     tailscale_hostname = "defectdojo"
     tailscale_tag      = "tag:defectdojo"
     tailnet_domain     = var.tailnet_domain
