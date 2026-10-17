@@ -29,6 +29,13 @@ class Effect(Enum):
 
 
 @dataclass(frozen=True)
+class Result:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+@dataclass(frozen=True)
 class Command:
     argv: tuple[str, ...]
     effect: Effect
@@ -44,6 +51,10 @@ class Command:
     output: Path | None = None
     # Fed to the command's stdin. Shown in dry-run output by size only.
     stdin: str | None = None
+    # What a dry run assumes this command returned, for commands whose output
+    # something downstream reads. A READ with this set is not run in a dry run:
+    # it would read state an earlier, skipped WRITE never produced.
+    dry_run: Result | None = None
 
     def display(self) -> str:
         env = [
@@ -60,13 +71,6 @@ class Command:
             if value := self.env.get(name):
                 text = text.replace(value, "<redacted>")
         return text
-
-
-@dataclass(frozen=True)
-class Result:
-    returncode: int
-    stdout: str
-    stderr: str
 
 
 class CommandError(RuntimeError):
@@ -142,7 +146,8 @@ class DryRunRunner:
         self._out = out
 
     def run(self, command: Command) -> Result:
-        if command.effect is Effect.READ:
+        if command.effect is Effect.READ and command.dry_run is None:
             return self._inner.run(command)
-        print(f"would run: {command.display()}", file=self._out)
-        return Result(0, "", "")
+        verb = "would run" if command.effect is Effect.WRITE else "would assume"
+        print(f"{verb}: {command.display()}", file=self._out)
+        return command.dry_run or Result(0, "", "")

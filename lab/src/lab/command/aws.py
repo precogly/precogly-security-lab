@@ -50,3 +50,8 @@ def precogly_sha(runner: CommandRunner, region: str) -> str:
 
 def job_secret(runner: CommandRunner, name: str, region: str) -> str:
     return secret(runner, f"{PROJECT}/jobs/{name}", region)
+
+
+def defectdojo_token(runner: CommandRunner, region: str) -> str:
+    """lab's DefectDojo API token, written by the DefectDojo box at boot."""
+    return secret(runner, f"{PROJECT}/defectdojo-lab-token", region)

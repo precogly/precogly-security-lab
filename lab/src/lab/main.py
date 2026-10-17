@@ -8,9 +8,9 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 
-from lab.command import CommandError, DryRunRunner, SubprocessRunner
+from lab.command import CommandError, CommandRunner, DryRunRunner, SubprocessRunner
 from lab.job import Job, JobError, load_jobs
-from lab.run import execute
+from lab.run import Status, execute
 from lab.target import TargetError, load_target
 
 # The only target until a second exists, so `lab run` takes no --target.
@@ -59,18 +59,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         selected = _select(jobs, args.jobs, args.all)
-        if not args.dry_run:
-            print(
-                "lab run: only --dry-run is built so far. A run that does not "
-                "reimport into DefectDojo is not a run, and the reimport is next.",
-                file=sys.stderr,
-            )
-            return 2
         target = load_target(_definitions("targets") / f"{TARGET}.toml")
-        runner = DryRunRunner(SubprocessRunner())
-        rid = execute(selected, target, runner, now=datetime.now(UTC))
-        print(f"dry run {rid}: nothing was changed")
-        return 0
+        runner: CommandRunner = SubprocessRunner()
+        if args.dry_run:
+            runner = DryRunRunner(runner)
+        rid, outcomes = execute(selected, target, runner, now=datetime.now(UTC))
+        if args.dry_run:
+            # The outcomes are what the dry run assumed, not results.
+            print(f"dry run {rid}: nothing was changed")
+            return 0
+        for outcome in outcomes:
+            where = f"test {outcome.test_id}" if outcome.test_id is not None else ""
+            print(f"{outcome.job:<18} {outcome.status:<16} {where}")
+            if outcome.error:
+                print(f"  {outcome.error}", file=sys.stderr)
+        print(f"run {rid}")
+        return 0 if all(o.status is Status.OK for o in outcomes) else 1
     except (JobError, TargetError, CommandError) as err:
         print(f"lab: {err}", file=sys.stderr)
         return 1

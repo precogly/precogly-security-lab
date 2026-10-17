@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -11,7 +12,7 @@ from pathlib import Path
 from lab.command import DryRunRunner, Effect
 from lab.command.fake import FakeRunner
 from lab.job import Input, load_job
-from lab.run import execute, run_id
+from lab.run import Status, execute, run_id
 from lab.target import load_target
 
 SHA = "94dd831e710fe11d7f344d0cddee3003c8819f2f"
@@ -36,7 +37,7 @@ def test_run_id_sorts_by_time_and_names_the_commit() -> None:
 
 def test_dry_run_reads_for_real_and_changes_nothing(tmp_path: Path) -> None:
     box, out = lab_box(), io.StringIO()
-    rid = execute([ZAP], TARGET, DryRunRunner(box, out), now=NOW, root=tmp_path)
+    rid, _ = execute([ZAP], TARGET, DryRunRunner(box, out), now=NOW, root=tmp_path)
 
     assert rid == "20261017T163000Z-94dd831"
     # Everything that reached the box was a read.
@@ -44,7 +45,7 @@ def test_dry_run_reads_for_real_and_changes_nothing(tmp_path: Path) -> None:
     printed = out.getvalue().splitlines()
     assert printed[0].startswith(f"would run: mkdir -p {tmp_path}/runs/{rid}")
     assert "tee" in printed[1]
-    docker_run = printed[-1]
+    docker_run = next(line for line in printed if "docker run" in line)
     assert "docker run" in docker_run
     assert "pentest.tail1234.ts.net:100.64.0.7" in docker_run
     assert f"{tmp_path}/runs/{rid}/zap-baseline:/zap/wrk" in docker_run
@@ -71,3 +72,82 @@ def test_a_job_with_inputs_builds_them_once_for_the_commit(tmp_path: Path) -> No
     assert printed.count(f"--tag lab/precogly-backend:{SHA}") == 1
     assert printed.count(f"--tag lab/precogly-frontend:{SHA}") == 1
     assert printed.count("docker save") == 2
+
+
+TOKEN = "dd-token-0123456789abcdef"
+
+
+def real_box() -> FakeRunner:
+    box = lab_box()
+    box.on("aws", "secretsmanager", stdout=TOKEN + "\n")
+    box.on("curl", stdout='{"test": 7, "statistics": {}}')
+    # ZAP exits 2 for warnings; that is not a failure.
+    box.on("docker", "run", returncode=2)
+    return box
+
+
+def meta(box: FakeRunner) -> dict[str, object]:
+    tee = [c for c in box.commands if c.argv[:1] == ("tee",)][-1]
+    assert tee.argv[1].endswith("meta.json")
+    assert tee.stdin is not None
+    doc = json.loads(tee.stdin)
+    assert isinstance(doc, dict)
+    return doc
+
+
+def test_a_finished_job_is_reimported_and_recorded(tmp_path: Path) -> None:
+    box = real_box()
+    _, [outcome] = execute([ZAP], TARGET, box, now=NOW, root=tmp_path)
+
+    assert (outcome.status, outcome.exit_code, outcome.test_id) == (Status.OK, 2, 7)
+    [curl] = [c for c in box.commands if c.argv[0] == "curl"]
+    form = set(curl.argv)
+    for field in (
+        "scan_type=ZAP Scan",
+        "test_title=zap-baseline",
+        f"commit_hash={SHA}",
+        "build_id=20261017T163000Z-94dd831",
+        "version=2.17.0",
+        "close_old_findings=true",
+    ):
+        assert field in form
+    # The token reaches curl on stdin only.
+    assert curl.stdin == f"Authorization: Token {TOKEN}\n"
+    assert not any(TOKEN in arg for c in box.commands for arg in c.argv)
+    assert meta(box)["status"] == "ok"
+
+
+def test_a_missing_report_is_never_reimported(tmp_path: Path) -> None:
+    # A reimport closes every finding the report lacks, so sending nothing
+    # would close the Test's whole history.
+    box = real_box()
+    box.on("test", "-s", returncode=1)
+    _, [outcome] = execute([ZAP], TARGET, box, now=NOW, root=tmp_path)
+
+    assert outcome.status is Status.FAILED
+    assert not any(c.argv[0] == "curl" for c in box.commands)
+    assert meta(box)["status"] == "failed"
+
+
+def test_a_timeout_kills_the_container_and_is_not_reimported(tmp_path: Path) -> None:
+    box = real_box()
+    box.times_out("docker", "run")
+    _, [outcome] = execute([ZAP], TARGET, box, now=NOW, root=tmp_path)
+
+    assert outcome.status is Status.TIMEOUT
+    assert (
+        "docker",
+        "kill",
+        "lab-20261017t163000z-94dd831-zap-baseline",
+    ) in box.argvs()
+    assert not any(c.argv[0] == "curl" for c in box.commands)
+
+
+def test_one_failed_job_does_not_stop_the_next(tmp_path: Path) -> None:
+    box = real_box()
+    box.times_out(
+        "docker", "run", "--rm", "--name", "lab-20261017t163000z-94dd831-first"
+    )
+    first, second = replace(ZAP, name="first"), replace(ZAP, name="second")
+    _, outcomes = execute([first, second], TARGET, box, now=NOW, root=tmp_path)
+    assert [o.status for o in outcomes] == [Status.TIMEOUT, Status.OK]
