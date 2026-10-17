@@ -826,7 +826,9 @@ What it costs:
   came back, and the old admin password still authenticated. Not yet tested with
   findings and import history in the dump; repeat after the first real runs.
 
-**Job definitions and the CLI** (proposed 2026-10-17, not yet reviewed).
+**Job definitions and the CLI** (proposed 2026-10-17; revised after review: inputs
+replace a special image name, and `--check` replaces any way of importing a
+development run).
 
 A job is a TOML file in `lab/jobs/`, read with the standard library's `tomllib` into a
 frozen dataclass that rejects unknown keys. Data, not code: a job that needs logic
@@ -844,11 +846,22 @@ scan_type = "ZAP Scan"                           # DefectDojo's parser name
 ```toml
 # lab/jobs/harness.toml
 name      = "harness"
-image     = "precogly-backend"     # built by lab from Precogly at the run's SHA
+image     = "@precogly-backend"    # "@": from this run's inputs, not a registry
 command   = ["python", "/job/run.py"]
 assets    = "harness"              # lab/src/lab/harness, mounted read-only at /job
 report    = "findings.json"
 scan_type = "Generic Findings Import"
+```
+
+```toml
+# lab/jobs/trivy-images.toml
+name      = "trivy-images"
+image     = "aquasec/trivy:0.76.0"
+inputs    = ["precogly-images"]    # mounted read-only under /in
+command   = ["trivy", "image", "--input", "/in/precogly-images/backend.tar",
+             "--format", "json", "--output", "/out/report.json"]
+report    = "report.json"
+scan_type = "Trivy Scan"
 ```
 
 What `lab` gives every job container:
@@ -857,14 +870,24 @@ What `lab` gives every job container:
 |---|---|
 | `/out` | the job's run directory, writable; the report goes here |
 | `/run/lab/target.json` | the target's URL and logins, read-only |
+| `/in/<input>` | each input the job declares, read-only |
 | env | `TARGET_URL`, `PRECOGLY_SHA`, `RUN_ID`, `OUT_DIR=/out` |
 | command placeholders | `{target_url}`, `{precogly_sha}`, `{run_id}`; any other `{name}` is an error at load |
 
-- **`image = "precogly-backend"`** is the one image `lab` builds rather than pulls:
-  Precogly's backend at the run's SHA, cached by SHA. The harness needs it for the
-  route walk, and running the replayer in the same container keeps the harness one
-  job with one report. The replayer uses only the standard library, so the image needs
-  nothing added.
+- **Inputs are what a job needs built from Precogly at the run's commit**, prepared by
+  `lab` once per run and cached by SHA, so three jobs needing the images cause one
+  build:
+  - `precogly-source`: the checkout, for SAST (Semgrep).
+  - `precogly-images`: the backend and frontend images, loaded into Docker and saved
+    as `backend.tar` and `frontend.tar`, for image scanning (`trivy image --input`,
+    checked at v0.76.0).
+
+  Of the jobs the phases plan, three need an input: the harness, Trivy and Semgrep.
+  ZAP, Schemathesis, garak or promptfoo, and the AI agent need only the target. An
+  image named `@<name>` is one of a run's built images rather than a registry image:
+  the harness runs in `@precogly-backend` for the route walk, and running the replayer
+  in the same container keeps the harness one job with one report. The replayer uses
+  only the standard library, so the image needs nothing added.
 - **A target is a TOML file too**, `lab/targets/pentest.toml`: URL and the seed's
   logins. The logins are the seed's published constants, so they are not secrets.
   Jobs and targets combine at run time, which is what makes it N + M files.
@@ -889,17 +912,34 @@ The CLI, kept small on purpose:
 ```text
 lab jobs                       list job definitions, and fail on any that do not load
 lab run <job>... [--all]       run jobs against the target, then reimport each report
+lab run <job> --check          run the job twice, parse both reports offline, import nothing
 lab run <job> --dry-run        print the resolved image, command, mounts and env; run nothing
 ```
 
-- **No `--no-import` flag.** A run that skips DefectDojo is the second run path D14
-  exists to prevent. Developing a job is `--dry-run`, then the printed `docker run`
-  by hand.
+- **`--check` is how a job is developed.** It runs the job exactly as a real run would,
+  then parses each report with DefectDojo's own parser, at the deployed release,
+  offline: a throwaway container of DefectDojo's image with networking off, reading
+  `dojo.tools.factory.PARSERS` directly. `get_parser()` would add a database lookup
+  only to check the parser is active. It prints the findings, and fails if any
+  finding's identity differs between the two runs, which is the "same identity in
+  every run" rule above made into a test. Checked on 2026-10-17: the generic parser
+  parsed and hashed findings with no database and no network.
+- **Why not import development runs somewhere separate.** A scratch Engagement was
+  considered: it would test the parse too, but its results would pile up where `lab`
+  cannot delete them, and a run that does not count is a tempting way round the one
+  that does. `--check` records nothing anywhere, so there is nothing to clean up and
+  nothing to misuse.
+- **The parser's version has to be the deployed one**, or `--check` tests a different
+  parser. Terraform publishes `defectdojo_version` to an SSM parameter, as it does the
+  SHA, and `--check` pulls that image.
+- Not yet checked: that every parser runs without a database. A parser that queries one
+  makes `--check` fail with a database error rather than pass. Check each when its job
+  is added; ZAP's and Trivy's come first.
+- **No `--no-import` flag.** A run that skips DefectDojo but counts as a run is the
+  second run path D14 exists to prevent; `--check` does not count as a run.
 - **One target for now**, `pentest`, so no `--target` flag until a second exists.
-- Open: how `lab` gets onto the scanner box. The repository has no remote, so the box
-  cannot clone it. Pushing it to a private GitHub repository and installing with
-  `uv tool install git+…@<ref>` keeps the box's copy tied to a commit; copying a wheel
-  over Tailscale SSH needs no remote but lets the box drift from the repository.
+- **Install:** the scanner box installs `lab` from
+  `github.com/precogly/precogly-security-lab` at a commit, with `uv tool install`.
 
 ## The AI layer
 
