@@ -17,13 +17,9 @@ capability and a defensible resume artifact are secondary.
 ## Design
 
 The architecture, the decisions with their rejected alternatives, the AWS-service to
-learning-goal map, and the phased build live in the design doc, which sits with its
-sibling plans in the Precogly working tree (gitignored scratch there):
-
-    precogly/docs/design/security-orchestration-platform.md
-
-Read it before adding anything here. Two anti-goals from it are worth repeating,
-because both are cheap to walk into:
+learning-goal map, and the phased build live in [`docs/design.md`](docs/design.md).
+Read it before adding anything here. Two of its anti-goals bear repeating, because
+both are cheap to walk into:
 
 - **Do not reinvent DefectDojo.** A findings database, cross-tool dedup, or a triage
   UI is solved upstream. Building any of them is CRUD that teaches neither AWS nor
