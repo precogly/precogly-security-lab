@@ -59,7 +59,8 @@ lab does not change that: nothing here is a service Precogly offers its users.
 What has changed is who uses it. Until 2026-10-13 this section said the platform
 borrows Precogly as a subject without asking the project to adopt it. A lab the core
 team tests features in is used by the project, even if the project does not own it.
-Who pays for it, and who may create instances, is not settled; see Open questions.
+Whoever deploys the lab owns it: it runs in their AWS account, and they decide who
+creates instances in it.
 
 Every instance deploys Precogly by following
 [`docs/guides/self-hosting-aws.md`](https://github.com/precogly/precogly/blob/ac22b875c5542a9be1db73f53373f0fa5eac22cc/docs/guides/self-hosting-aws.md),
@@ -1113,13 +1114,11 @@ they did not — the same discipline the AppSec plan holds itself to.
   `tag:scanner` nodes until it expires. Minting an ephemeral key per job from a
   Tailscale OAuth client avoids that, at the cost of a client secret the trigger holds.
   Decide in Phase B.
-- **What is an instance's config, and who may create one?** The R3 fields are a first
-  guess. Per-instance state needs a key scheme, and creating instances needs to be
+- **What is an instance's config?** The R3 fields are a first guess. Per-instance state needs a key scheme, and creating instances needs to be
   something 2–3 people can do, not only one person's laptop.
 - **Read before building the instance tooling:** GOAD's Instances and Provisioning
   docs (not readable on 2026-10-13) and Preevy, which runs compose previews on cheap
   VMs and is close to the guide's shape.
-- **Who pays, and is the core team's use agreed with Vikram?**
 - Does a scan target run continuously or spin up per scan run? Under D8 this is
   "create an instance at the start of a run". Decide when Phase B lands.
 - One AWS account or a separate one for the blast radius of the agent jobs? The sandbox
