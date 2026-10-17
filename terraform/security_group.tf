@@ -15,7 +15,7 @@
 #   the internet ─────────────────────► (nothing: no inbound rule)
 #
 # Access between people, the scanner box and the instance is the tailnet
-# policy's job (design doc D10, docs/tailnet-setup.md). Tailscale traffic
+# policy's job (docs/tailnet-setup.md). Tailscale traffic
 # arrives as replies to connections each box opened outbound, which the group's
 # connection tracking lets back in without an ingress rule. A group cannot
 # express "this person" anyway, only addresses and other groups.
@@ -34,8 +34,9 @@ resource "aws_security_group" "precogly" {
 
 # The scanner box runs scanners and AI agents, which is untrusted code. Its
 # tailnet reach is bounded by the policy (tag:scanner -> tag:precogly :443
-# only); its internet reach is the egress below, and is wide, because an agent
-# has to reach its model's API. Design doc D12 records that as unmet R6.
+# only). Its internet reach is the egress below, and is wide, because an agent
+# has to reach its model's API. So an agent that escapes its job here can reach
+# any internet host; containing that is not done yet.
 resource "aws_security_group" "scanner" {
   name        = "${var.project}-scanner"
   description = "Scanner box: scanners and AI agents, untrusted code"

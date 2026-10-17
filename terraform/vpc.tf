@@ -15,8 +15,9 @@
 # and an internet gateway gives them that for free where a NAT gateway costs
 # ~$32/mo. "Public" here means only that the route table has a default route
 # to the internet gateway. Whether anything can come *in* is the security
-# groups' answer, and they have no inbound rules (security_group.tf). The trade
-# is written up in the design doc, D10.
+# groups' answer, and they have no inbound rules (security_group.tf). The cost:
+# a security group is then the one thing between a box and the internet, where
+# a private subnet would add the route table as a second.
 #
 # One AZ because nothing in Phase A is long-running enough to want two. An AZ
 # outage costs a re-run.

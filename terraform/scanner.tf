@@ -1,7 +1,9 @@
 # The scanner box: where scanners, the cross-tenant harness and AI pentest
-# agents run against the Precogly instance (design doc D12). Joined to the
-# tailnet as tag:scanner, whose only grant is tag:precogly on 443. People get a
-# shell over Tailscale SSH.
+# agents run against the Precogly instance. A box of its own, rather than
+# teammates' laptops, because an autonomous agent runs commands its model
+# chooses, and on a laptop it would run them beside that person's files and
+# credentials. Joined to the tailnet as tag:scanner, whose only grant is
+# tag:precogly on 443. People get a shell over Tailscale SSH.
 #
 # The same shape as precogly.tf, written out again rather than shared: the two
 # differ in tag, size, disk, user data and what the role may read, and a module
@@ -50,8 +52,9 @@ resource "aws_iam_role_policy" "scanner_authkey" {
   })
 }
 
-# The harness reads the commit to check out (design doc D13). Public
-# information, but written by Terraform alone, which is what makes it trusted.
+# The harness reads the commit to check out, so it walks the routes of the code
+# the instance actually runs. Public information, but written by Terraform
+# alone, which is what makes it trusted.
 #
 # AmazonSSMManagedInstanceCore below already grants ssm:GetParameter on every
 # parameter, so this adds no access today. It is written out so the harness's

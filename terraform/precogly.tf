@@ -1,16 +1,18 @@
-# The Precogly instance: one EC2 running Precogly as its AWS guide deploys it
-# (design doc D9), joined to the tailnet as tag:precogly. People and the
-# scanner box reach it at https://<instance_name>.<tailnet_domain>; nothing
-# reaches it from the internet.
+# The Precogly instance: one EC2 running Precogly as its AWS guide deploys it,
+# so behaviour seen here is behaviour users of the guide would see. Joined to
+# the tailnet as tag:precogly. People and the scanner box reach it at
+# https://<instance_name>.<tailnet_domain>; nothing reaches it from the
+# internet.
 #
 # Phase A has one instance, written out literally. When there is a second,
-# this file becomes the instance module (D8).
+# this file becomes a module called once per instance, each with its own state.
 #
 # Setup that Terraform does not do (the tailnet policy, MagicDNS and HTTPS, the
 # auth key) is in docs/tailnet-setup.md.
 
-# The commit the instance deploys, resolved from the branch on every plan
-# (design doc D13). Both boxes use this SHA and never the branch name: the
+# The commit the instance deploys, resolved from the branch on every plan, so
+# the lab follows the branch with no bump step to forget. Both boxes use this
+# SHA and never the branch name: the
 # instance deploys it, and the scanner box's harness checks it out to walk the
 # routes. A branch name handed to each separately could name two different
 # commits, and the harness would test routes the instance does not have.

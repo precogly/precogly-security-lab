@@ -1,7 +1,8 @@
 #!/bin/bash
 # First-boot setup for the Precogly instance: join the tailnet, then deploy
-# Precogly the way its AWS self-hosting guide does, with the lab's departures
-# (design doc D9) marked "Departure:" where they happen. Runs once, as root,
+# Precogly the way its AWS self-hosting guide does, so behaviour seen here is
+# behaviour the guide's users would see. Each place the lab has to differ from
+# the guide is marked "Departure:" with its reason. Runs once, as root,
 # via cloud-init. Rendered by templatefile() in precogly.tf.
 #
 # The guide, pinned to the commit this follows:
@@ -92,8 +93,8 @@ systemctl enable --now tailscaled
 # and the spent auth key is worth nothing to anyone who reads the secret later.
 #
 # --accept-dns=false: this box resolves through the VPC resolver. It never
-# needs to look up another tailnet name, because it is never allowed to reach
-# one (D10).
+# needs to look up another tailnet name, because the tailnet policy lets it
+# reach none: it is the target, and a compromised target must reach nothing.
 install -m 600 /dev/null /run/tailscale-authkey
 read_authkey "$AUTHKEY_SECRET" > /run/tailscale-authkey
 tailscale up \
@@ -152,8 +153,10 @@ unset SECRET_KEY POSTGRES_PASSWORD
 
 # Guide step 7, unchanged except for the site address. A site address ending in
 # .ts.net makes Caddy fetch its certificate from the local tailscaled instead
-# of running ACME (D11), so the guide's HTTP-01 challenge, which needs port 80
-# open to the internet, never runs.
+# of running ACME (isTailscaleDomain in Caddy's modules/caddyhttp/autohttps.go),
+# so the guide's HTTP-01 challenge, which needs port 80 open to the internet,
+# never runs. Caddy still terminates TLS itself, so scanners measure the
+# guide's TLS and headers, not Tailscale's.
 cat > Caddyfile <<CADDYFILE
 $FQDN {
     handle /api/* {
@@ -200,7 +203,9 @@ CADDYFILE
 #   needs tailscaled up before `up` will start Caddy, which holds at first boot
 #   because Tailscale joined above.
 # - The host's /var/run/tailscale is mounted, so Caddy can reach tailscaled's
-#   socket for the certificate (D11 has what else that socket allows).
+#   socket for the certificate. The socket answers root with far more than
+#   certificates, so a compromised Caddy can drive the node: the same reach as
+#   a stolen node key, which the tailnet policy bounds to nothing.
 # - The guide's `dns: 8.8.8.8` lines are dropped. They were there for Caddy's
 #   ACME lookups, which no longer happen, and the security group has no egress
 #   rule for port 53 anywhere but the VPC resolver, so they would fail silently.
