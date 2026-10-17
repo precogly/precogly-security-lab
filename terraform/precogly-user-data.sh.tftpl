@@ -1,0 +1,289 @@
+#!/bin/bash
+# First-boot setup for the Precogly instance: join the tailnet, then deploy
+# Precogly the way its AWS self-hosting guide does, with the lab's departures
+# (design doc D9) marked "Departure:" where they happen. Runs once, as root,
+# via cloud-init. Rendered by templatefile() in precogly.tf.
+#
+# The guide, pinned to the commit this follows:
+# https://github.com/precogly/precogly/blob/ac22b875c5542a9be1db73f53373f0fa5eac22cc/docs/guides/self-hosting-aws.md
+#
+# templatefile() interpolates every dollar-brace sequence it sees, comments
+# included. Template variables are copied into shell variables on the lines
+# below and used only as "$NAME" afterwards. The one exception is the compose
+# file, which needs compose's own dollar-brace syntax: there it is written with
+# a doubled dollar, which templatefile() renders as a single one.
+set -euo pipefail
+
+# shellcheck disable=SC2154 # assigned by templatefile(), not by the shell
+REGION="${region}"
+# shellcheck disable=SC2154
+AUTHKEY_SECRET="${authkey_secret_arn}"
+# shellcheck disable=SC2154
+TS_HOSTNAME="${tailscale_hostname}"
+# shellcheck disable=SC2154
+TS_TAG="${tailscale_tag}"
+# shellcheck disable=SC2154
+FQDN="${tailscale_hostname}.${tailnet_domain}"
+# shellcheck disable=SC2154
+PRECOGLY_REF="${precogly_ref}"
+
+COMPOSE_FILE=docker-compose.workshop.yml
+APP=/home/ubuntu/precogly
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+
+# Guide step 4: Docker and Compose from Ubuntu's archive. git for the clone, jq
+# for reading Tailscale's status.
+apt-get install -y docker.io docker-compose-v2 git jq
+usermod -aG docker ubuntu
+
+# The AWS CLI, to read the auth key. The Ubuntu AMI does not ship it; the snap
+# is the distribution AWS documents for Ubuntu.
+snap install aws-cli --classic
+
+# Terraform creates the auth-key secret empty in the same apply that boots this
+# instance, and the key is put in by hand afterwards (docs/tailnet-setup.md).
+# So wait for it rather than fail. An hour is arbitrary: long enough to mint a
+# key, short enough that a forgotten one shows up as a failed boot the same
+# day. Progress is in /var/log/cloud-init-output.log.
+read_secret() {
+  local secret_id="$1" deadline=$((SECONDS + 3600))
+  until aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
+    --query SecretString --output text 2>/dev/null; do
+    if ((SECONDS >= deadline)); then
+      echo "gave up waiting for a value in $secret_id" >&2
+      return 1
+    fi
+    echo "waiting for a value in $secret_id" >&2
+    sleep 30
+  done
+}
+
+# Tailscale
+
+# Tailscale's own repository, unpinned. The client is the box's only way in,
+# and a stale one is worse than an unannounced upgrade.
+# shellcheck source=/dev/null
+. /etc/os-release
+curl -fsSLo /usr/share/keyrings/tailscale-archive-keyring.gpg \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.noarmor.gpg"
+curl -fsSLo /etc/apt/sources.list.d/tailscale.list \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.tailscale-keyring.list"
+apt-get update
+apt-get install -y tailscale
+systemctl enable --now tailscaled
+
+# The auth key is one-off, pre-approved and tagged when it is minted. It is read
+# into a root-only file so it never appears on a command line, and deleted once
+# the node has joined: after that the node's own key keeps it on the tailnet,
+# and the spent auth key is worth nothing to anyone who reads the secret later.
+#
+# --accept-dns=false: this box resolves through the VPC resolver. It never
+# needs to look up another tailnet name, because it is never allowed to reach
+# one (D10).
+install -m 600 /dev/null /run/tailscale-authkey
+read_secret "$AUTHKEY_SECRET" > /run/tailscale-authkey
+tailscale up \
+  --auth-key=file:/run/tailscale-authkey \
+  --advertise-tags="$TS_TAG" \
+  --hostname="$TS_HOSTNAME" \
+  --accept-dns=false
+rm -f /run/tailscale-authkey
+
+# If a node of the same name is still on the tailnet, this one joins as
+# "<name>-1", and every URL written below would be wrong while the boot looked
+# successful. Stop here instead.
+ACTUAL_FQDN="$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')"
+if [[ "$ACTUAL_FQDN" != "$FQDN" ]]; then
+  echo "joined as $ACTUAL_FQDN, expected $FQDN: remove the old node from the Machines page and replace this instance" >&2
+  exit 1
+fi
+TS_IP="$(tailscale ip -4)"
+
+# Precogly
+
+# Guide step 5, at a chosen ref rather than whatever the default branch is.
+sudo -u ubuntu git clone https://github.com/precogly/precogly.git "$APP"
+sudo -u ubuntu git -C "$APP" checkout "$PRECOGLY_REF"
+cd "$APP"
+
+# Guide step 6. The secrets are generated here and live only in this file, so
+# they never pass through Terraform state or user data. They die with the box,
+# and so does the database they protect.
+#
+# Departure: every URL is the box's ts.net name, and ALLOWED_HOSTS has no IP
+# address, because nothing reaches the box by address.
+#
+# TS_IP is not in the guide. The compose file below binds Caddy to it.
+SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(50))')"
+POSTGRES_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(50))')"
+install -m 600 -o ubuntu -g ubuntu /dev/null .env
+cat > .env <<ENV
+SECRET_KEY=$SECRET_KEY
+POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+POSTGRES_USER=precogly
+POSTGRES_DB=precogly
+ALLOWED_HOSTS=$FQDN
+CORS_ALLOWED_ORIGINS=https://$FQDN
+FRONTEND_URL=https://$FQDN
+MCP_RESOURCE_URL=https://$FQDN/mcp
+MCP_ISSUER_URL=https://$FQDN
+TS_IP=$TS_IP
+ENV
+unset SECRET_KEY POSTGRES_PASSWORD
+
+# Guide step 7, unchanged except for the site address. A site address ending in
+# .ts.net makes Caddy fetch its certificate from the local tailscaled instead
+# of running ACME (D11), so the guide's HTTP-01 challenge, which needs port 80
+# open to the internet, never runs.
+cat > Caddyfile <<CADDYFILE
+$FQDN {
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle /admin/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle /media/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle /mcp {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle /o/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle /.well-known/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+        }
+    }
+    handle {
+        reverse_proxy frontend:80
+    }
+}
+CADDYFILE
+
+# Guide step 8. Three departures, all in the caddy service:
+#
+# - Ports are bound to the Tailscale address, not every interface. The security
+#   group already drops inbound traffic on the public address; this is a second
+#   barrier, so a mistaken inbound rule still reaches nothing. The cost: compose
+#   needs tailscaled up before `up` will start Caddy, which holds at first boot
+#   because Tailscale joined above.
+# - The host's /var/run/tailscale is mounted, so Caddy can reach tailscaled's
+#   socket for the certificate (D11 has what else that socket allows).
+# - The guide's `dns: 8.8.8.8` lines are dropped. They were there for Caddy's
+#   ACME lookups, which no longer happen, and the security group has no egress
+#   rule for port 53 anywhere but the VPC resolver, so they would fail silently.
+cat > "$COMPOSE_FILE" <<'COMPOSE'
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: precogly-postgres
+    environment:
+      POSTGRES_DB: $${POSTGRES_DB:-precogly}
+      POSTGRES_USER: $${POSTGRES_USER:-precogly}
+      POSTGRES_PASSWORD: $${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-precogly} -d $${POSTGRES_DB:-precogly}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: prod
+    container_name: precogly-backend
+    environment:
+      DATABASE_URL: postgres://$${POSTGRES_USER:-precogly}:$${POSTGRES_PASSWORD}@db:5432/$${POSTGRES_DB:-precogly}
+      DJANGO_SETTINGS_MODULE: config.settings.workshop
+      SECRET_KEY: $${SECRET_KEY}
+      ALLOWED_HOSTS: $${ALLOWED_HOSTS:-localhost}
+      CORS_ALLOWED_ORIGINS: $${CORS_ALLOWED_ORIGINS:-http://localhost}
+      FRONTEND_URL: $${FRONTEND_URL:-http://localhost}
+      MCP_RESOURCE_URL: $${MCP_RESOURCE_URL}
+      MCP_ISSUER_URL: $${MCP_ISSUER_URL}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      target: prod
+    container_name: precogly-frontend
+    depends_on:
+      - backend
+
+  caddy:
+    image: caddy:alpine
+    ports:
+      - "$${TS_IP}:80:80"
+      - "$${TS_IP}:443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - /var/run/tailscale:/var/run/tailscale
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  postgres_data:
+  caddy_data:
+COMPOSE
+
+# Guide step 9: tell Django the proxy terminated TLS, or SECURE_SSL_REDIRECT
+# loops. Caddy terminates TLS here exactly as in the guide, so this is needed
+# unchanged.
+cat > backend/config/settings/workshop.py <<'PY'
+from .production import *  # noqa: F401, F403
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+PY
+
+chown -R ubuntu:ubuntu "$APP"
+
+# Guide step 10. The prod image runs `migrate` before gunicorn starts, so seed
+# only once `migrate --check` reports nothing left to apply. Fifteen minutes is
+# arbitrary; the first build on a t3.medium is most of it.
+docker compose -f "$COMPOSE_FILE" up --build -d
+deadline=$((SECONDS + 900))
+until docker compose -f "$COMPOSE_FILE" exec -T backend \
+  python manage.py migrate --check >/dev/null 2>&1; do
+  if ((SECONDS >= deadline)); then
+    echo "migrations did not finish; see: docker compose -f $COMPOSE_FILE logs backend" >&2
+    exit 1
+  fi
+  sleep 10
+done
+docker compose -f "$COMPOSE_FILE" exec -T backend python manage.py seed
+
+# Guide step 11, from the box itself: the page answers over the tailnet address
+# with a certificate curl trusts. Caddy asks tailscaled for the certificate on
+# the first handshake, so the first attempts may fail while it is issued.
+deadline=$((SECONDS + 300))
+until curl -sf -o /dev/null --resolve "$FQDN:443:$TS_IP" "https://$FQDN/"; do
+  if ((SECONDS >= deadline)); then
+    echo "https://$FQDN/ did not answer; see: docker compose -f $COMPOSE_FILE logs caddy" >&2
+    exit 1
+  fi
+  sleep 10
+done
+echo "Precogly is up at https://$FQDN/"

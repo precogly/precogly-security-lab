@@ -1,0 +1,81 @@
+#!/bin/bash
+# First-boot setup for the scanner box: join the tailnet with Tailscale SSH on,
+# and install Docker, since most scanners ship as images. The scanners and
+# agents themselves are installed by whoever runs them. Runs once, as root, via
+# cloud-init. Rendered by templatefile() in scanner.tf.
+#
+# The Tailscale half is the same as precogly-user-data.sh.tftpl, copied rather
+# than shared so each box's first boot reads top to bottom in one file.
+#
+# templatefile() interpolates every dollar-brace sequence it sees, comments
+# included, so template variables are copied into shell variables below and
+# used only as "$NAME" afterwards.
+set -euo pipefail
+
+# shellcheck disable=SC2154 # assigned by templatefile(), not by the shell
+REGION="${region}"
+# shellcheck disable=SC2154
+AUTHKEY_SECRET="${authkey_secret_arn}"
+# shellcheck disable=SC2154
+TS_HOSTNAME="${tailscale_hostname}"
+# shellcheck disable=SC2154
+TS_TAG="${tailscale_tag}"
+# shellcheck disable=SC2154
+FQDN="${tailscale_hostname}.${tailnet_domain}"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io jq
+usermod -aG docker ubuntu
+
+# The AWS CLI, to read the auth key. The Ubuntu AMI does not ship it; the snap
+# is the distribution AWS documents for Ubuntu.
+snap install aws-cli --classic
+
+# Waits for the auth key to be put in by hand; see precogly-user-data.sh.tftpl.
+read_secret() {
+  local secret_id="$1" deadline=$((SECONDS + 3600))
+  until aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
+    --query SecretString --output text 2>/dev/null; do
+    if ((SECONDS >= deadline)); then
+      echo "gave up waiting for a value in $secret_id" >&2
+      return 1
+    fi
+    echo "waiting for a value in $secret_id" >&2
+    sleep 30
+  done
+}
+
+# shellcheck source=/dev/null
+. /etc/os-release
+curl -fsSLo /usr/share/keyrings/tailscale-archive-keyring.gpg \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.noarmor.gpg"
+curl -fsSLo /etc/apt/sources.list.d/tailscale.list \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.tailscale-keyring.list"
+apt-get update
+apt-get install -y tailscale
+systemctl enable --now tailscaled
+
+# Two differences from the instance:
+#
+# --ssh turns on Tailscale SSH, so people get a shell here by tailnet identity,
+# with no key and no IAM user. The policy's `ssh` rule decides who, and as
+# which local user (docs/tailnet-setup.md).
+#
+# DNS is accepted (the default), because scanners have to resolve the
+# instance's ts.net name, which only MagicDNS answers.
+install -m 600 /dev/null /run/tailscale-authkey
+read_secret "$AUTHKEY_SECRET" > /run/tailscale-authkey
+tailscale up \
+  --auth-key=file:/run/tailscale-authkey \
+  --advertise-tags="$TS_TAG" \
+  --hostname="$TS_HOSTNAME" \
+  --ssh
+rm -f /run/tailscale-authkey
+
+ACTUAL_FQDN="$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')"
+if [[ "$ACTUAL_FQDN" != "$FQDN" ]]; then
+  echo "joined as $ACTUAL_FQDN, expected $FQDN: remove the old node from the Machines page and replace this instance" >&2
+  exit 1
+fi
+echo "scanner box is up at $FQDN; ssh ubuntu@$TS_HOSTNAME"
