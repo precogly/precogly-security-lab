@@ -880,7 +880,29 @@ What `lab` gives every job container:
 | `/run/lab/target.json` | the target's URL and logins, read-only |
 | `/in/<input>` | each input the job declares, read-only |
 | env | `TARGET_URL`, `PRECOGLY_SHA`, `RUN_ID`, `OUT_DIR=/out` |
+| secrets | each name in `secrets`, as an env var: `anthropic-api-key` becomes `ANTHROPIC_API_KEY` |
 | command placeholders | `{target_url}`, `{precogly_sha}`, `{run_id}`; any other `{name}` is an error at load |
+| network | Docker's bridge network, with the target's host pinned to its tailnet address |
+
+- **`secrets`** names entries under `precogly-seclab/jobs/` in Secrets Manager, for
+  jobs that cannot work without one: the AI agent's model key, promptfoo's grader.
+  `docker run` gets `--env NAME` with no value and reads the value from `lab`'s
+  environment, so no secret reaches the command line, `ps`, `--dry-run` output, the
+  run directory or `meta.json`. Handing a key to untrusted code is inherent to running
+  an agent; the key should be one scoped to the lab, with a spending limit.
+- **`timeout`**, `"45m"` style, default `1h`, at most `12h` (both arbitrary). On
+  timeout `lab` kills the container by name and the run fails, so nothing is
+  reimported.
+- **Bridge network, never host.** Checked on the scanner box on 2026-10-17: a bridge
+  container reached the target over the tailnet with `--add-host` and could not get a
+  metadata token. With host networking it could, and the box's role reads `lab`'s
+  DefectDojo token.
+- **One function builds every container**, `lab.container.run_args`, rather than an
+  abstract job class. A subclass per tool could override how it runs, which is the
+  per-tool scripting this decision removes. Every planned tool was checked against
+  image + command + report: all fit, two of them once `secrets` existed. What
+  will need an interface is the runner, local Docker now and Fargate in Phase B: a
+  `Runner` protocol is added with its second implementation, not before.
 
 - **Inputs are what a job needs built from Precogly at the run's commit**, prepared by
   `lab` once per run and cached by SHA, so three jobs needing the images cause one

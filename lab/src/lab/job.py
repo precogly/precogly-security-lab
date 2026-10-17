@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import string
 import tomllib
 from dataclasses import dataclass
@@ -39,8 +40,29 @@ BUILT_IMAGES = frozenset({"precogly-backend", "precogly-frontend"})
 # The only placeholders a command may use.
 PLACEHOLDERS = frozenset({"target_url", "precogly_sha", "run_id"})
 
+# Environment every job gets; a secret may not shadow one.
+RESERVED_ENV = frozenset({"TARGET_URL", "PRECOGLY_SHA", "RUN_ID", "OUT_DIR"})
+
+# Arbitrary. Long enough for a full ZAP scan; a job that needs more says so.
+DEFAULT_TIMEOUT = "1h"
+# Arbitrary ceiling, so a typo like "300h" fails at load instead of hanging a box.
+MAX_TIMEOUT_SECONDS = 12 * 3600
+
+_SECRET_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_DURATION = re.compile(r"([1-9][0-9]*)([smh])")
+
 _FIELDS = frozenset(
-    {"name", "image", "command", "report", "scan_type", "inputs", "assets"}
+    {
+        "name",
+        "image",
+        "command",
+        "report",
+        "scan_type",
+        "inputs",
+        "assets",
+        "secrets",
+        "timeout",
+    }
 )
 _REQUIRED = frozenset({"name", "image", "command", "report", "scan_type"})
 
@@ -58,11 +80,24 @@ class Job:
     scan_type: ScanType
     inputs: frozenset[Input]
     assets: str | None
+    # Names under precogly-seclab/jobs/ in Secrets Manager.
+    secrets: tuple[str, ...]
+    timeout_seconds: int
 
     @property
     def built_image(self) -> str | None:
         """The built image this job runs in, or None for a registry image."""
         return self.image.removeprefix("@") if self.image.startswith("@") else None
+
+    @property
+    def secret_env(self) -> dict[str, str]:
+        """Secret name to the environment variable the job reads it from."""
+        return {name: secret_env_name(name) for name in self.secrets}
+
+
+def secret_env_name(secret: str) -> str:
+    """ "anthropic-api-key" becomes "ANTHROPIC_API_KEY"."""
+    return secret.upper().replace("-", "_")
 
 
 def load_job(path: Path) -> Job:
@@ -113,6 +148,13 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
     if assets is not None and not isinstance(assets, str):
         raise JobError("assets must be a string")
 
+    secrets = tuple(_strings(raw, "secrets", []))
+    for secret in secrets:
+        if not _SECRET_NAME.fullmatch(secret):
+            raise JobError(f"secret {secret!r} must be lowercase words joined by '-'")
+        if secret_env_name(secret) in RESERVED_ENV:
+            raise JobError(f"secret {secret!r} would shadow {secret_env_name(secret)}")
+
     return Job(
         name=name,
         image=image,
@@ -121,7 +163,20 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
         scan_type=_enum(ScanType, _string(raw, "scan_type"), "scan_type"),
         inputs=inputs,
         assets=assets,
+        secrets=secrets,
+        timeout_seconds=_duration(raw.get("timeout", DEFAULT_TIMEOUT)),
     )
+
+
+def _duration(value: object) -> int:
+    """'45m' to 2700. Seconds, minutes or hours, as a whole number."""
+    match = _DURATION.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise JobError(f"timeout {value!r} must look like '30s', '45m' or '2h'")
+    seconds = int(match[1]) * {"s": 1, "m": 60, "h": 3600}[match[2]]
+    if seconds > MAX_TIMEOUT_SECONDS:
+        raise JobError(f"timeout {value!r} exceeds {MAX_TIMEOUT_SECONDS // 3600}h")
+    return seconds
 
 
 def _check_image(image: str, inputs: frozenset[Input]) -> None:

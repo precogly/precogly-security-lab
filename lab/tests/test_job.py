@@ -70,7 +70,7 @@ def test_rejects(tmp_path: Path, change: tuple[str, str], message: str) -> None:
 
 def test_rejects_unknown_keys(tmp_path: Path) -> None:
     with pytest.raises(JobError, match="unknown keys"):
-        load_job(write(tmp_path, ZAP + 'timeout = "1h"\n'))
+        load_job(write(tmp_path, ZAP + "retries = 3\n"))
 
 
 def test_rejects_a_built_image_without_its_input(tmp_path: Path) -> None:
@@ -96,3 +96,34 @@ def test_image_pinning(tmp_path: Path, image: str, ok: bool) -> None:
     else:
         with pytest.raises(JobError):
             load_job(path)
+
+
+def test_timeout_defaults_and_parses(tmp_path: Path) -> None:
+    assert load_job(write(tmp_path, ZAP)).timeout_seconds == 3600
+    job = load_job(write(tmp_path, ZAP + 'timeout = "45m"\n'))
+    assert job.timeout_seconds == 45 * 60
+
+
+@pytest.mark.parametrize("timeout", ["45", "1d", "0m", "13h", "-5m"])
+def test_rejects_bad_timeouts(tmp_path: Path, timeout: str) -> None:
+    with pytest.raises(JobError, match="timeout"):
+        load_job(write(tmp_path, ZAP + f'timeout = "{timeout}"\n'))
+
+
+def test_secrets_map_to_environment_names(tmp_path: Path) -> None:
+    job = load_job(write(tmp_path, ZAP + 'secrets = ["anthropic-api-key"]\n'))
+    assert job.secret_env == {"anthropic-api-key": "ANTHROPIC_API_KEY"}
+
+
+@pytest.mark.parametrize(
+    ("secret", "message"),
+    [
+        ("Anthropic_Key", "lowercase words"),
+        ("../admin", "lowercase words"),
+        # Would replace the TARGET_URL every job relies on.
+        ("target-url", "would shadow TARGET_URL"),
+    ],
+)
+def test_rejects_bad_secret_names(tmp_path: Path, secret: str, message: str) -> None:
+    with pytest.raises(JobError, match=message):
+        load_job(write(tmp_path, ZAP + f'secrets = ["{secret}"]\n'))
