@@ -1,0 +1,9 @@
+# Trivy: known vulnerabilities in Precogly's backend image, as built at the run's commit.
+name      = "trivy-backend"
+image     = "aquasec/trivy:0.76.0"
+inputs    = ["precogly-images"]
+# The image's entrypoint is trivy.
+command   = ["image", "--input", "/in/precogly-images/backend.tar", "--format", "json", "--output", "/out/report.json"]
+report    = "report.json"
+scan_type = "Trivy Scan"
+timeout   = "30m"

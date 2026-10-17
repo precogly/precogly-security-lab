@@ -1,0 +1,11 @@
+# Semgrep: static analysis of Precogly's source at the run's commit.
+#
+# p/default is a registry ruleset that changes without a version, so counts can
+# move with no change in the code. Shipping pinned rules as assets fixes that.
+name      = "semgrep"
+image     = "semgrep/semgrep:1.181.0"
+inputs    = ["precogly-source"]
+command   = ["semgrep", "scan", "--config", "p/default", "--metrics", "off", "--json", "--output", "/out/report.json", "/in/precogly-source"]
+report    = "report.json"
+scan_type = "Semgrep JSON Report"
+timeout   = "30m"
