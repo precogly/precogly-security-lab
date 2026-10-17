@@ -31,3 +31,6 @@ venv/
 
 # Scratch and experiments (project-local, never committed)
 tmp/
+
+# Local deferred-work notes, kept out of the repository
+SESSION.md
