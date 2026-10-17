@@ -778,6 +778,44 @@ The model, and why it is shaped this way:
   or whether that chart is a small page reading the API. Either way the data is
   DefectDojo's; the chart is deferred until there are runs to plot.
 
+**Keeping the record across a replacement.** DefectDojo's database is the whole record,
+and it lives on the box's root volume, so replacing the box (an OS patch, a changed
+user data) would delete every finding and the time series with it. Chosen: a nightly
+`pg_dump` to S3, and a restore at first boot.
+
+- **Backup:** a systemd timer on the box dumps the database, gzipped, to
+  `s3://<bucket>/pg/<UTC timestamp>.sql.gz`. The bucket is versioned, private and
+  encrypted, and a lifecycle rule expires dumps after 30 days (arbitrary).
+- **Restore:** at first boot, if the bucket holds a dump, the box starts Postgres alone,
+  loads the newest dump, then starts the rest. The initializer finds the admin user
+  already present, skips first-boot setup and prints no password, so the password in
+  the admin secret stays the right one. A dump from an older DefectDojo release is
+  migrated forward by the initializer.
+- **The box's role** may put and get objects under `pg/` and list the bucket, and
+  nothing else. Without `s3:DeleteObject`, and with versioning on, a compromised box
+  can add bad dumps but cannot remove good ones.
+- **Rejected: `prevent_destroy` on the instance.** One line, and it stops an accidental
+  replacement, but a deliberate one still deletes everything.
+- **Rejected: a separate EBS volume** for Docker's data. Survives a replacement with no
+  restore step, but the first boot must tell a new volume from a used one, and the
+  volume is lost with the AZ or an accidental `terraform destroy`, which the bucket is
+  not.
+
+What it costs:
+
+- Up to a day of findings and history is lost on a replacement: whatever happened since
+  the last dump. Run `sudo systemctl start defectdojo-backup` before a planned
+  replacement to close the gap.
+- Uploaded files (`defectdojo_media`) are not in the dump. Reports can be re-uploaded
+  from their run directories; nothing else is stored there.
+- `DD_CREDENTIAL_AES_256_KEY` is generated per box, so anything DefectDojo encrypts
+  with it (stored tool credentials) does not decrypt after a restore. The lab stores
+  none: `lab` authenticates with an API token, which is a plain database row and
+  survives. Store the key in Secrets Manager if that changes.
+- A restore is code that runs rarely, so it rots unnoticed. Test it once after the first
+  dump exists: replace the box and check that a known finding and its history are
+  back.
+
 ## The AI layer
 
 Two additions and one stage, all additive to the spine — no rearchitecting. The order
@@ -932,6 +970,13 @@ they did not — the same discipline the AppSec plan holds itself to.
   sandbox is designed first, the agent chosen second.
 
 ## Log
+
+- **2026-10-17 (DefectDojo backups)** — D14 gains "Keeping the record across a
+  replacement". Writing the DefectDojo box showed its database, and so the whole time
+  series, lived on a root volume any replacement would delete. A nightly dump to S3
+  with a restore at first boot was chosen over a destroy guard, which still loses
+  everything on a deliberate replacement, and a separate volume, which an accidental
+  destroy takes too.
 
 - **2026-10-17 (last)** — D14 added, and DefectDojo moved into Phase A. With the
   harness, ZAP, Trivy and more planned, each run as its own script and its own set of
