@@ -47,15 +47,27 @@ snap install aws-cli --classic
 # So wait for it rather than fail. An hour is arbitrary: long enough to mint a
 # key, short enough that a forgotten one shows up as a failed boot the same
 # day. Progress is in /var/log/cloud-init-output.log.
-read_secret() {
-  local secret_id="$1" deadline=$((SECONDS + 3600))
-  until aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
-    --query SecretString --output text 2>/dev/null; do
+#
+# "A value" means one shaped like an auth key, not any value. The secret
+# outlives the box, so a replacement finds whatever the last box left there. A
+# box that took the first value it found would fail to join before a fresh key
+# could be put in. Two halves make that impossible: the box overwrites its
+# secret with a placeholder as soon as it has joined (below), and this loop
+# skips anything not shaped like a key, placeholder included.
+read_authkey() {
+  local secret_id="$1" deadline=$((SECONDS + 3600)) value
+  while true; do
+    value="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
+      --query SecretString --output text 2>/dev/null || true)"
+    if [[ "$value" == tskey-auth-* ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
     if ((SECONDS >= deadline)); then
-      echo "gave up waiting for a value in $secret_id" >&2
+      echo "gave up waiting for a tskey-auth- value in $secret_id" >&2
       return 1
     fi
-    echo "waiting for a value in $secret_id" >&2
+    echo "waiting for a tskey-auth- value in $secret_id" >&2
     sleep 30
   done
 }
@@ -83,13 +95,18 @@ systemctl enable --now tailscaled
 # needs to look up another tailnet name, because it is never allowed to reach
 # one (D10).
 install -m 600 /dev/null /run/tailscale-authkey
-read_secret "$AUTHKEY_SECRET" > /run/tailscale-authkey
+read_authkey "$AUTHKEY_SECRET" > /run/tailscale-authkey
 tailscale up \
   --auth-key=file:/run/tailscale-authkey \
   --advertise-tags="$TS_TAG" \
   --hostname="$TS_HOSTNAME" \
   --accept-dns=false
 rm -f /run/tailscale-authkey
+
+# The key is spent now. Overwrite it, so the next box created against this
+# secret waits for a fresh key instead of reading this one.
+aws secretsmanager put-secret-value --region "$REGION" --secret-id "$AUTHKEY_SECRET" \
+  --secret-string spent >/dev/null
 
 # If a node of the same name is still on the tailnet, this one joins as
 # "<name>-1", and every URL written below would be wrong while the boot looked

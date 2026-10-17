@@ -65,8 +65,9 @@ resource "aws_secretsmanager_secret" "precogly_authkey" {
   recovery_window_in_days = 0
 }
 
-# The instance's role: read its own auth key, and be reachable by SSM Session
-# Manager so a shell needs no SSH key and no inbound rule.
+# The instance's role: read its own auth key and overwrite it once spent, and
+# be reachable by SSM Session Manager so a shell needs no SSH key and no inbound
+# rule.
 resource "aws_iam_role" "precogly" {
   name = "${var.project}-precogly"
 
@@ -80,15 +81,21 @@ resource "aws_iam_role" "precogly" {
   })
 }
 
-resource "aws_iam_role_policy" "precogly_read_authkey" {
-  name = "read-authkey"
+# PutSecretValue lets the box overwrite its key with a placeholder after
+# joining (see the user data). Scoped to this one secret, the most a
+# compromised instance can do with it is write junk into its own spent key.
+resource "aws_iam_role_policy" "precogly_authkey" {
+  name = "own-authkey"
   role = aws_iam_role.precogly.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "secretsmanager:GetSecretValue"
+      Effect = "Allow"
+      Action = [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+      ]
       Resource = aws_secretsmanager_secret.precogly_authkey.arn
     }]
   })

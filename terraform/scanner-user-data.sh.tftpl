@@ -32,16 +32,22 @@ usermod -aG docker ubuntu
 # is the distribution AWS documents for Ubuntu.
 snap install aws-cli --classic
 
-# Waits for the auth key to be put in by hand; see precogly-user-data.sh.tftpl.
-read_secret() {
-  local secret_id="$1" deadline=$((SECONDS + 3600))
-  until aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
-    --query SecretString --output text 2>/dev/null; do
+# Waits for an auth key to be put in by hand, skipping the placeholder the last
+# box left; see precogly-user-data.sh.tftpl for why both halves are needed.
+read_authkey() {
+  local secret_id="$1" deadline=$((SECONDS + 3600)) value
+  while true; do
+    value="$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$secret_id" \
+      --query SecretString --output text 2>/dev/null || true)"
+    if [[ "$value" == tskey-auth-* ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
     if ((SECONDS >= deadline)); then
-      echo "gave up waiting for a value in $secret_id" >&2
+      echo "gave up waiting for a tskey-auth- value in $secret_id" >&2
       return 1
     fi
-    echo "waiting for a value in $secret_id" >&2
+    echo "waiting for a tskey-auth- value in $secret_id" >&2
     sleep 30
   done
 }
@@ -65,13 +71,17 @@ systemctl enable --now tailscaled
 # DNS is accepted (the default), because scanners have to resolve the
 # instance's ts.net name, which only MagicDNS answers.
 install -m 600 /dev/null /run/tailscale-authkey
-read_secret "$AUTHKEY_SECRET" > /run/tailscale-authkey
+read_authkey "$AUTHKEY_SECRET" > /run/tailscale-authkey
 tailscale up \
   --auth-key=file:/run/tailscale-authkey \
   --advertise-tags="$TS_TAG" \
   --hostname="$TS_HOSTNAME" \
   --ssh
 rm -f /run/tailscale-authkey
+
+# The key is spent; overwrite it so the next box waits for a fresh one.
+aws secretsmanager put-secret-value --region "$REGION" --secret-id "$AUTHKEY_SECRET" \
+  --secret-string spent >/dev/null
 
 ACTUAL_FQDN="$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')"
 if [[ "$ACTUAL_FQDN" != "$FQDN" ]]; then

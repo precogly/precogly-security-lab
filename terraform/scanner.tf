@@ -14,9 +14,10 @@ resource "aws_secretsmanager_secret" "scanner_authkey" {
   recovery_window_in_days = 0
 }
 
-# Read its own auth key and the commit the instance runs, plus SSM. In
-# particular, no access to the instance's secret: an agent that takes over this
-# box should learn nothing it could use to join the tailnet as tag:precogly.
+# Read its own auth key (and overwrite it once spent) and the commit the
+# instance runs, plus SSM. In particular, no access to the instance's secret: an
+# agent that takes over this box should learn nothing it could use to join the
+# tailnet as tag:precogly.
 resource "aws_iam_role" "scanner" {
   name = "${var.project}-scanner"
 
@@ -30,15 +31,20 @@ resource "aws_iam_role" "scanner" {
   })
 }
 
-resource "aws_iam_role_policy" "scanner_read_authkey" {
-  name = "read-authkey"
+# As in precogly.tf: PutSecretValue on this one secret, for overwriting the key
+# after joining.
+resource "aws_iam_role_policy" "scanner_authkey" {
+  name = "own-authkey"
   role = aws_iam_role.scanner.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "secretsmanager:GetSecretValue"
+      Effect = "Allow"
+      Action = [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+      ]
       Resource = aws_secretsmanager_secret.scanner_authkey.arn
     }]
   })
