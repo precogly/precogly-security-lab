@@ -8,7 +8,7 @@
 # this file becomes a module called once per instance, each with its own state.
 #
 # Setup that Terraform does not do (the tailnet policy, MagicDNS and HTTPS, the
-# auth key) is in docs/tailnet-setup.md.
+# auth key) is in docs/setup.md.
 
 # The commit the instance deploys, resolved from the branch on every plan, so
 # the lab follows the branch with no bump step to forget. Both boxes use this

@@ -14,7 +14,7 @@ output "scanner_instance_id" {
 }
 
 output "authkey_secret_ids" {
-  description = "Secrets to fill with a fresh Tailscale auth key after apply (docs/tailnet-setup.md, step 3)."
+  description = "Secrets to fill with a fresh Tailscale auth key after apply (docs/setup.md, Auth keys)."
   value = {
     precogly   = aws_secretsmanager_secret.precogly_authkey.name
     scanner    = aws_secretsmanager_secret.scanner_authkey.name

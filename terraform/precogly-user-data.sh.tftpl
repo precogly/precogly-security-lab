@@ -44,7 +44,7 @@ usermod -aG docker ubuntu
 snap install aws-cli --classic
 
 # Terraform creates the auth-key secret empty in the same apply that boots this
-# instance, and the key is put in by hand afterwards (docs/tailnet-setup.md).
+# instance, and the key is put in by hand afterwards (docs/setup.md).
 # So wait for it rather than fail. An hour is arbitrary: long enough to mint a
 # key, short enough that a forgotten one shows up as a failed boot the same
 # day. Progress is in /var/log/cloud-init-output.log.

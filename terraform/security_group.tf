@@ -15,7 +15,7 @@
 #   the internet ─────────────────────► (nothing: no inbound rule)
 #
 # Access between people, the scanner box and the instance is the tailnet
-# policy's job (docs/tailnet-setup.md). Tailscale traffic
+# policy's job (docs/setup.md). Tailscale traffic
 # arrives as replies to connections each box opened outbound, which the group's
 # connection tracking lets back in without an ingress rule. A group cannot
 # express "this person" anyway, only addresses and other groups.
