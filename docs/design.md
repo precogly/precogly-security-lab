@@ -826,6 +826,81 @@ What it costs:
   came back, and the old admin password still authenticated. Not yet tested with
   findings and import history in the dump; repeat after the first real runs.
 
+**Job definitions and the CLI** (proposed 2026-10-17, not yet reviewed).
+
+A job is a TOML file in `lab/jobs/`, read with the standard library's `tomllib` into a
+frozen dataclass that rejects unknown keys. Data, not code: a job that needs logic
+ships it in its image or its assets, so `lab` stays the one place that runs things.
+
+```toml
+# lab/jobs/zap-baseline.toml
+name      = "zap-baseline"
+image     = "ghcr.io/zaproxy/zaproxy:2.17.0"     # a tag, never `latest`
+command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "/out/report.xml"]
+report    = "report.xml"                         # relative to /out
+scan_type = "ZAP Scan"                           # DefectDojo's parser name
+```
+
+```toml
+# lab/jobs/harness.toml
+name      = "harness"
+image     = "precogly-backend"     # built by lab from Precogly at the run's SHA
+command   = ["python", "/job/run.py"]
+assets    = "harness"              # lab/src/lab/harness, mounted read-only at /job
+report    = "findings.json"
+scan_type = "Generic Findings Import"
+```
+
+What `lab` gives every job container:
+
+| | |
+|---|---|
+| `/out` | the job's run directory, writable; the report goes here |
+| `/run/lab/target.json` | the target's URL and logins, read-only |
+| env | `TARGET_URL`, `PRECOGLY_SHA`, `RUN_ID`, `OUT_DIR=/out` |
+| command placeholders | `{target_url}`, `{precogly_sha}`, `{run_id}`; any other `{name}` is an error at load |
+
+- **`image = "precogly-backend"`** is the one image `lab` builds rather than pulls:
+  Precogly's backend at the run's SHA, cached by SHA. The harness needs it for the
+  route walk, and running the replayer in the same container keeps the harness one
+  job with one report. The replayer uses only the standard library, so the image needs
+  nothing added.
+- **A target is a TOML file too**, `lab/targets/pentest.toml`: URL and the seed's
+  logins. The logins are the seed's published constants, so they are not secrets.
+  Jobs and targets combine at run time, which is what makes it N + M files.
+- **Success is "the report exists and is not empty", not the exit code.** Many
+  scanners exit non-zero when they find something: `zap-baseline.py` at v2.17.0 exits
+  1 for at least one FAIL, 2 for warnings only, and 3 for any other failure. The exit
+  code is recorded in `meta.json`; a 3 with no report is a failed run by the rule
+  below, not by the code.
+- **A failed job is never reimported.** Reimport closes every finding missing from the
+  report, so reimporting an empty or truncated report from a crashed run would close a
+  Test's whole history. No report, no reimport, and the run is marked failed.
+- **Run ID** is `<UTC timestamp>-<first 7 of the SHA>`, for example
+  `20261017T1630Z-94dd831`. Run directories live at `/var/lib/lab/runs/<run-id>/<job>/`
+  on the scanner box.
+- **The reimport** sends `scan_type`, `product_name=Precogly`,
+  `engagement_name=lab: pentest`, `test_title=<job name>`, `auto_create_context=true`,
+  `close_old_findings=true`, `commit_hash=<SHA>`, `build_id=<run ID>`,
+  `version=<image tag>` and `scan_date=<run date>`.
+
+The CLI, kept small on purpose:
+
+```text
+lab jobs                       list job definitions, and fail on any that do not load
+lab run <job>... [--all]       run jobs against the target, then reimport each report
+lab run <job> --dry-run        print the resolved image, command, mounts and env; run nothing
+```
+
+- **No `--no-import` flag.** A run that skips DefectDojo is the second run path D14
+  exists to prevent. Developing a job is `--dry-run`, then the printed `docker run`
+  by hand.
+- **One target for now**, `pentest`, so no `--target` flag until a second exists.
+- Open: how `lab` gets onto the scanner box. The repository has no remote, so the box
+  cannot clone it. Pushing it to a private GitHub repository and installing with
+  `uv tool install git+…@<ref>` keeps the box's copy tied to a commit; copying a wheel
+  over Tailscale SSH needs no remote but lets the box drift from the repository.
+
 ## The AI layer
 
 Two additions and one stage, all additive to the spine — no rearchitecting. The order
@@ -878,7 +953,7 @@ defect end to end.**
 **Phase A — the MVP thread.** Two boxes, one finding.
 
 1. By hand, once: the tailnet policy, MagicDNS and HTTPS (D10, D11). Steps in the lab
-   repo's `docs/tailnet-setup.md`.
+   repo's `docs/setup.md`.
 2. Terraform: a VPC with one public subnet and an internet gateway; the instance,
    following Precogly's AWS guide with D9's departures, seeded with at least two
    tenants; the scanner box (D12). Each box has its own empty auth-key secret, IMDSv2
