@@ -58,8 +58,8 @@ def test_load_jobs_keys_by_name(tmp_path: Path) -> None:
         (("2.17.0", "latest"), "must pin a version tag or digest"),
         (("zaproxy:2.17.0", "zaproxy"), "must pin a version tag or digest"),
         (("{target_url}", "{target_host}"), "command uses ['target_host']"),
-        (('"report.xml"', '"../../etc/passwd"'), "must be a path inside /out"),
-        (('"report.xml"', '"/etc/passwd"'), "must be a path inside /out"),
+        (('"report.xml"', '"../../etc/passwd"'), "must be a relative path inside /out"),
+        (('"report.xml"', '"/etc/passwd"'), "must be a relative path inside /out"),
         (('name      = "zap-baseline"', 'name = "zap"'), "must match the file name"),
     ],
 )
@@ -127,3 +127,22 @@ def test_secrets_map_to_environment_names(tmp_path: Path) -> None:
 def test_rejects_bad_secret_names(tmp_path: Path, secret: str, message: str) -> None:
     with pytest.raises(JobError, match=message):
         load_job(write(tmp_path, ZAP + f'secrets = ["{secret}"]\n'))
+
+
+@pytest.mark.parametrize(
+    ("mount", "ok"),
+    [
+        ("/zap/wrk", True),
+        ("/", False),
+        ("zap/wrk", False),
+        ("/in", False),
+        ("/run", False),
+    ],
+)
+def test_out_mount(tmp_path: Path, mount: str, ok: bool) -> None:
+    path = write(tmp_path, ZAP + f'out_mount = "{mount}"\n')
+    if ok:
+        assert load_job(path).out_mount == mount
+    else:
+        with pytest.raises(JobError, match="out_mount"):
+            load_job(path)

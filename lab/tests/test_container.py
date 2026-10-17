@@ -30,6 +30,7 @@ ZAP = Job(
     assets=None,
     secrets=(),
     timeout_seconds=3600,
+    out_mount="/out",
 )
 
 
@@ -78,3 +79,10 @@ def test_mounts_only_declared_inputs_read_only() -> None:
     assert f"{images}:/in/precogly-images:ro" in args
     assert "/opt/lab/harness:/job:ro" in args
     assert f"lab/precogly-backend:{RUN.precogly_sha}" in args
+
+
+def test_mounts_the_run_directory_where_the_job_asks() -> None:
+    # zap-baseline.py only writes reports under /zap/wrk.
+    args = run_args(replace(ZAP, out_mount="/zap/wrk"), RUN)
+    assert f"{RUN.out_dir}:/zap/wrk" in args
+    assert "OUT_DIR=/zap/wrk" in args

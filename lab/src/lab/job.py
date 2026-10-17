@@ -48,6 +48,13 @@ DEFAULT_TIMEOUT = "1h"
 # Arbitrary ceiling, so a typo like "300h" fails at load instead of hanging a box.
 MAX_TIMEOUT_SECONDS = 12 * 3600
 
+# Where a job's run directory is mounted, unless the tool insists on its own:
+# zap-baseline.py writes every report under /zap/wrk and exits 3 if that is not
+# mounted (zap-baseline.py at v2.17.0, lines 302-309).
+DEFAULT_OUT_MOUNT = "/out"
+# Mount points lab already uses inside every container.
+_TAKEN_MOUNTS = ("/in", "/job", "/run/lab")
+
 _SECRET_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _DURATION = re.compile(r"([1-9][0-9]*)([smh])")
 
@@ -62,6 +69,7 @@ _FIELDS = frozenset(
         "assets",
         "secrets",
         "timeout",
+        "out_mount",
     }
 )
 _REQUIRED = frozenset({"name", "image", "command", "report", "scan_type"})
@@ -83,6 +91,8 @@ class Job:
     # Names under precogly-seclab/jobs/ in Secrets Manager.
     secrets: tuple[str, ...]
     timeout_seconds: int
+    # Where the run directory is mounted; the report is relative to it.
+    out_mount: str
 
     @property
     def built_image(self) -> str | None:
@@ -96,7 +106,7 @@ class Job:
 
 
 def secret_env_name(secret: str) -> str:
-    """ "anthropic-api-key" becomes "ANTHROPIC_API_KEY"."""
+    """The env var a secret is passed in: anthropic-api-key, ANTHROPIC_API_KEY."""
     return secret.upper().replace("-", "_")
 
 
@@ -138,11 +148,22 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
             allowed = sorted(PLACEHOLDERS)
             raise JobError(f"command uses {sorted(unknown)}; allowed: {allowed}")
 
-    # A path out of /out could make lab reimport a file the job did not write.
+    out_mount = raw.get("out_mount", DEFAULT_OUT_MOUNT)
+    mount = PurePosixPath(out_mount) if isinstance(out_mount, str) else None
+    if mount is None or not mount.is_absolute() or str(mount) == "/":
+        raise JobError(f"out_mount {out_mount!r} must be an absolute path below /")
+    if any(
+        mount.is_relative_to(t) or PurePosixPath(t).is_relative_to(mount)
+        for t in _TAKEN_MOUNTS
+    ):
+        raise JobError(f"out_mount {out_mount!r} overlaps one of {list(_TAKEN_MOUNTS)}")
+
+    # A path out of the run directory could make lab reimport a file the job
+    # did not write.
     report = _string(raw, "report")
     parts = PurePosixPath(report)
     if parts.is_absolute() or ".." in parts.parts:
-        raise JobError(f"report {report!r} must be a path inside /out")
+        raise JobError(f"report {report!r} must be a relative path inside {out_mount}")
 
     assets = raw.get("assets")
     if assets is not None and not isinstance(assets, str):
@@ -165,6 +186,7 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
         assets=assets,
         secrets=secrets,
         timeout_seconds=_duration(raw.get("timeout", DEFAULT_TIMEOUT)),
+        out_mount=str(mount),
     )
 
 

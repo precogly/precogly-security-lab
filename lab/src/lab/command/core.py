@@ -42,13 +42,18 @@ class Command:
     check: bool = True
     # Stream stdout and stderr to this file instead of holding them in memory.
     output: Path | None = None
+    # Fed to the command's stdin. Shown in dry-run output by size only.
+    stdin: str | None = None
 
     def display(self) -> str:
         env = [
             f"{name}=<redacted>" if name in self.secret else f"{name}={value}"
             for name, value in sorted(self.env.items())
         ]
-        return shlex.join([*env, *self.argv])
+        shown = shlex.join([*env, *self.argv])
+        if self.stdin is not None:
+            shown += f" <<< ({len(self.stdin.encode())} bytes)"
+        return shown
 
     def redact(self, text: str) -> str:
         for name in self.secret:
@@ -73,6 +78,14 @@ class CommandError(RuntimeError):
         super().__init__(f"{message}\n{tail}" if tail else message)
 
 
+class CommandTimeout(CommandError):
+    """A command that ran past its timeout and was killed.
+
+    Only the process lab started is killed. For `docker run` that is the
+    client, and the container keeps running until killed by name.
+    """
+
+
 class CommandRunner(Protocol):
     def run(self, command: Command) -> Result: ...
 
@@ -89,6 +102,7 @@ class SubprocessRunner:
                     done = subprocess.run(
                         command.argv,
                         env=env,
+                        input=command.stdin.encode() if command.stdin else None,
                         stdout=log,
                         stderr=subprocess.STDOUT,
                         timeout=command.timeout,
@@ -99,6 +113,7 @@ class SubprocessRunner:
                 captured = subprocess.run(
                     command.argv,
                     env=env,
+                    input=command.stdin,
                     capture_output=True,
                     text=True,
                     timeout=command.timeout,
@@ -108,7 +123,9 @@ class SubprocessRunner:
         except FileNotFoundError:
             raise CommandError(command, f"{command.argv[0]}: not installed") from None
         except subprocess.TimeoutExpired:
-            raise CommandError(command, f"timed out after {command.timeout}s") from None
+            raise CommandTimeout(
+                command, f"timed out after {command.timeout}s"
+            ) from None
 
         if command.check and result.returncode != 0:
             where = f"; see {command.output}" if command.output else ""

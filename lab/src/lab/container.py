@@ -67,7 +67,7 @@ def run_args(job: Job, run: Run) -> list[str]:
         "--add-host",
         f"{run.target_host}:{run.target_ip}",
         "--volume",
-        f"{run.out_dir}:/out",
+        f"{run.out_dir}:{job.out_mount}",
         "--volume",
         f"{run.target_json}:/run/lab/target.json:ro",
     ]
@@ -81,7 +81,7 @@ def run_args(job: Job, run: Run) -> list[str]:
         ("TARGET_URL", run.target_url),
         ("PRECOGLY_SHA", run.precogly_sha),
         ("RUN_ID", run.run_id),
-        ("OUT_DIR", "/out"),
+        ("OUT_DIR", job.out_mount),
     ):
         args += ["--env", f"{key}={value}"]
     for env_name in job.secret_env.values():

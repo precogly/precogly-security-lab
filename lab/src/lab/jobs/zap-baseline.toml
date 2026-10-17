@@ -1,0 +1,9 @@
+# ZAP's baseline scan: a spider and passive rules, unauthenticated.
+name      = "zap-baseline"
+image     = "ghcr.io/zaproxy/zaproxy:2.17.0"
+# zap-baseline.py writes reports only under /zap/wrk.
+out_mount = "/zap/wrk"
+command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "report.xml"]
+report    = "report.xml"
+scan_type = "ZAP Scan"
+timeout   = "30m"

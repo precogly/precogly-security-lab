@@ -1,15 +1,26 @@
-"""Smoke tests for lab."""
+"""The CLI loads every shipped definition and refuses what is not built."""
 
 from __future__ import annotations
 
+import pytest
+
 import lab
+from lab.main import main
 
 
 def test_version_is_set() -> None:
     assert lab.__version__
 
 
-def test_main_runs() -> None:
-    from lab.main import main
+def test_jobs_lists_every_shipped_job(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["jobs"]) == 0
+    assert "zap-baseline" in capsys.readouterr().out
 
-    assert main([]) == 0
+
+def test_a_run_without_dry_run_is_refused_until_the_reimport_exists() -> None:
+    assert main(["run", "zap-baseline"]) == 2
+
+
+def test_run_needs_names_or_all_not_both() -> None:
+    assert main(["run", "--dry-run"]) == 1
+    assert main(["run", "zap-baseline", "--all", "--dry-run"]) == 1

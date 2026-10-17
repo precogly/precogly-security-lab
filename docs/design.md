@@ -846,9 +846,11 @@ deployed DefectDojo, which catches a parser renamed in an upgrade.
 # lab/src/lab/jobs/zap-baseline.toml
 name      = "zap-baseline"
 image     = "ghcr.io/zaproxy/zaproxy:2.17.0"     # a tag, never `latest`
-command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "/out/report.xml"]
-report    = "report.xml"                         # relative to /out
+out_mount = "/zap/wrk"                           # ZAP writes reports only here
+command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "report.xml"]
+report    = "report.xml"                         # relative to out_mount
 scan_type = "ZAP Scan"                           # DefectDojo's parser name
+timeout   = "30m"
 ```
 
 ```toml
@@ -876,7 +878,7 @@ What `lab` gives every job container:
 
 | | |
 |---|---|
-| `/out` | the job's run directory, writable; the report goes here |
+| `/out` | the job's run directory, writable; the report goes here. A job can move it with `out_mount`: in Docker, `zap-baseline.py` writes reports only under `/zap/wrk` and exits 3 if that is not mounted (lines 302–309 at v2.17.0) |
 | `/run/lab/target.json` | the target's URL and logins, read-only |
 | `/in/<input>` | each input the job declares, read-only |
 | env | `TARGET_URL`, `PRECOGLY_SHA`, `RUN_ID`, `OUT_DIR=/out` |
@@ -930,7 +932,8 @@ What `lab` gives every job container:
   report, so reimporting an empty or truncated report from a crashed run would close a
   Test's whole history. No report, no reimport, and the run is marked failed.
 - **Run ID** is `<UTC timestamp>-<first 7 of the SHA>`, for example
-  `20261017T1630Z-94dd831`. Run directories live at `/var/lib/lab/runs/<run-id>/<job>/`
+  `20261017T163000Z-94dd831`, to the second so two runs in one minute do not collide.
+  Run directories live at `/var/lib/lab/runs/<run-id>/<job>/`
   on the scanner box.
 - **The reimport** sends `scan_type`, `product_name=Precogly`,
   `engagement_name=lab: pentest`, `test_title=<job name>`, `auto_create_context=true`,
