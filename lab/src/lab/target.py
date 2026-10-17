@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import string
-import subprocess
 import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -53,29 +52,6 @@ def load_target(path: Path) -> Target:
         return _parse(raw, path.stem)
     except TargetError as err:
         raise TargetError(f"{path}: {err}") from None
-
-
-def tailnet_suffix() -> str:
-    """This machine's tailnet DNS suffix, such as "tail1234.ts.net".
-
-    Read from the local daemon, which needs no credentials. The `tailscale`
-    package on PyPI is a client for the cloud API and would need an API key on
-    the scanner box, beside untrusted jobs.
-    """
-    try:
-        out = subprocess.run(
-            ["tailscale", "status", "--json"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as err:
-        msg = "cannot read the tailnet suffix: is Tailscale installed and up?"
-        raise TargetError(msg) from err
-    suffix = json.loads(out).get("MagicDNSSuffix")
-    if not isinstance(suffix, str) or not suffix:
-        raise TargetError("tailscale status has no MagicDNSSuffix: is MagicDNS on?")
-    return suffix
 
 
 _LOGIN_FIELDS = frozenset({"email", "password", "organization", "role"})
