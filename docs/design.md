@@ -790,6 +790,38 @@ The model, and why it is shaped this way:
   or whether that chart is a small page reading the API. Either way the data is
   DefectDojo's; the chart is deferred until there are runs to plot.
 
+**Getting findings out: `lab findings`** (added 2026-10-17). The core team reads
+DefectDojo, and triage is increasingly done with an AI agent, which needs the
+findings as a file rather than a UI.
+
+```text
+lab findings -o findings.json            # active findings, every job
+lab findings --job semgrep -o sast.json  # one job
+```
+
+- **It reads DefectDojo, not raw reports**, so the export is the deduplicated record
+  with the team's triage applied. "Active" is the count definition above: active, and
+  not duplicate, false positive or risk accepted.
+- **It runs on any machine on the tailnet**, with the person's own DefectDojo API key
+  in `DEFECTDOJO_TOKEN`. It needs no AWS access, no Docker and no scanners; those stay
+  on the scanner box. `lab run` refuses to run anywhere `/var/lib/lab` does not exist,
+  since only the scanner box's first boot creates it; `--dry-run` works anywhere.
+- **The agent never holds a credential.** It reads a file. Pointing it at DefectDojo's
+  API instead would hand it a token that can also change triage state.
+- **A small, versioned schema**, not DefectDojo's 91 fields per finding: id, a link to
+  the finding in DefectDojo, job, severity, title, CWE, CVEs, component and version,
+  path and line, the commit scanned, first seen, description and mitigation. Paths are
+  rewritten from the container's (`/in/precogly-source/...`) to the Precogly
+  repository's, so an agent can open the code at the commit given.
+- **DefectDojo ignores filters it does not know, silently** (checked on 2026-10-17: a
+  made-up filter, and `test__title`, both returned all 839 findings). A misspelt filter
+  would export everything. So the export uses only filters verified by flipping them
+  (`active`, `duplicate`, `false_p`, `risk_accepted`, `test`, `engagement`, and `name`
+  on engagements), and checks every returned finding against them anyway.
+- Not built: writing triage back. The agent proposes, a person records the decision in
+  DefectDojo. A `lab triage` that applies a decisions file would need write access, so
+  it is a separate decision.
+
 **Keeping the record across a replacement.** DefectDojo's database is the whole record,
 and it lives on the box's root volume, so replacing the box (an OS patch, a changed
 user data) would delete every finding and the time series with it. Chosen: a nightly
