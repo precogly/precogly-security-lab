@@ -1,0 +1,19 @@
+# Records the answers given when this project was scaffolded, so the
+# template can be re-applied later with `copier update` (or `aria update`).
+# Managed by Copier — do not edit by hand.
+_src_path: /Users/alvinkuruvilla/Dev/aria/templates/python
+author_email: alvineasokuruvilla@gmail.com
+author_name: Alvin Kuruvilla
+description: 'The lab''s one run path: run a scan job against an instance and reimport
+    its report into DefectDojo'
+include_ci: false
+include_docs: false
+include_precommit: false
+include_security_scan: true
+license: none
+package_name: lab
+project_name: lab
+project_slug: lab
+project_type: cli
+python_floor: '3.13'
+type_checker: mypy

@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lab"
+version = "0.1.0"
+description = "The lab's one run path: run a scan job against an instance and reimport its report into DefectDojo"
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [
+    { name = "Alvin Kuruvilla", email = "alvineasokuruvilla@gmail.com" },
+]
+dependencies = []
+
+[project.scripts]
+lab = "lab.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "hypothesis>=6",
+    "syrupy>=4",
+    "ruff>=0.9",
+    "mypy>=1.13",
+    "pip-audit>=2.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lab"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # flake8-bugbear
+    "C4",       # flake8-comprehensions
+    "UP",       # pyupgrade
+    "SIM",      # flake8-simplify
+    "PTH",      # flake8-use-pathlib (prefer pathlib.Path)
+    "RUF",      # ruff-specific
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lab"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+# lab.harness.route_walk runs inside Precogly's backend image, where Django is
+# installed, and is never imported by lab itself. Django is deliberately not a
+# dependency here, so its imports are untyped to mypy.
+[[tool.mypy.overrides]]
+module = ["django", "django.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
