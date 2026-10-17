@@ -19,6 +19,7 @@ output "authkey_secret_ids" {
     precogly   = aws_secretsmanager_secret.precogly_authkey.name
     scanner    = aws_secretsmanager_secret.scanner_authkey.name
     defectdojo = aws_secretsmanager_secret.defectdojo_authkey.name
+    secobserve = aws_secretsmanager_secret.secobserve_authkey.name
   }
 }
 
@@ -30,4 +31,14 @@ output "defectdojo_url" {
 output "defectdojo_instance_id" {
   description = "For `aws ssm start-session --target`: a shell on the DefectDojo box."
   value       = aws_instance.defectdojo.id
+}
+
+output "secobserve_url" {
+  description = "SecObserve's UI and API, over the tailnet. Log in as admin with the password in the secobserve-admin secret."
+  value       = "https://secobserve.${var.tailnet_domain}"
+}
+
+output "secobserve_instance_id" {
+  description = "For `aws ssm start-session --target`: a shell on the SecObserve box."
+  value       = aws_instance.secobserve.id
 }

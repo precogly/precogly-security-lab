@@ -1,0 +1,264 @@
+#!/bin/bash
+# SecObserve box first boot: join the tailnet, run SecObserve, serve it over
+# HTTPS with `tailscale serve`, and back it up nightly.
+#
+# templatefile() interpolates every dollar-brace and percent-brace, comments
+# included. The compose file's variables and curl's %%{http_code} are written
+# doubled, which renders as one; nothing else uses either form.
+set -euo pipefail
+
+# shellcheck disable=SC2154 # assigned by templatefile(), not by the shell
+REGION="${region}"
+# shellcheck disable=SC2154
+AUTHKEY_SECRET="${authkey_secret_arn}"
+# shellcheck disable=SC2154
+ADMIN_SECRET="${admin_secret_arn}"
+# shellcheck disable=SC2154
+TOKEN_SECRET="${upload_token_secret_arn}"
+# shellcheck disable=SC2154
+KEYS_SECRET="${keys_secret_arn}"
+# shellcheck disable=SC2154
+BACKUP_BUCKET="${backup_bucket}"
+# shellcheck disable=SC2154
+TS_HOSTNAME="${tailscale_hostname}"
+# shellcheck disable=SC2154
+TS_TAG="${tailscale_tag}"
+# shellcheck disable=SC2154
+FQDN="${tailscale_hostname}.${tailnet_domain}"
+# shellcheck disable=SC2154
+VERSION="${secobserve_version}"
+
+APP=/opt/secobserve
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io docker-compose-v2 jq
+snap install aws-cli --classic
+
+secret() {
+  aws secretsmanager get-secret-value --region "$REGION" --secret-id "$1" \
+    --query SecretString --output text 2>/dev/null || true
+}
+put_secret() {
+  aws secretsmanager put-secret-value --region "$REGION" --secret-id "$1" \
+    --secret-string file:///dev/stdin >/dev/null
+}
+
+# Skips anything not shaped like a key, such as the last box's "spent".
+read_authkey() {
+  local deadline=$((SECONDS + 3600)) value
+  while true; do
+    value="$(secret "$AUTHKEY_SECRET")"
+    if [[ "$value" == tskey-auth-* ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      echo "gave up waiting for a tskey-auth- value in $AUTHKEY_SECRET" >&2
+      return 1
+    fi
+    echo "waiting for a tskey-auth- value in $AUTHKEY_SECRET" >&2
+    sleep 30
+  done
+}
+
+# Tailscale
+
+# shellcheck source=/dev/null
+. /etc/os-release
+curl -fsSLo /usr/share/keyrings/tailscale-archive-keyring.gpg \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.noarmor.gpg"
+curl -fsSLo /etc/apt/sources.list.d/tailscale.list \
+  "https://pkgs.tailscale.com/stable/ubuntu/$VERSION_CODENAME.tailscale-keyring.list"
+apt-get update
+apt-get install -y tailscale
+systemctl enable --now tailscaled
+
+# No tailnet DNS: the policy lets this box reach no other node.
+install -m 600 /dev/null /run/tailscale-authkey
+read_authkey > /run/tailscale-authkey
+tailscale up \
+  --auth-key=file:/run/tailscale-authkey \
+  --advertise-tags="$TS_TAG" \
+  --hostname="$TS_HOSTNAME" \
+  --accept-dns=false
+rm -f /run/tailscale-authkey
+printf spent | put_secret "$AUTHKEY_SECRET"
+
+ACTUAL_FQDN="$(tailscale status --json | jq -r '.Self.DNSName | rtrimstr(".")')"
+if [[ "$ACTUAL_FQDN" != "$FQDN" ]]; then
+  echo "joined as $ACTUAL_FQDN, expected $FQDN: remove the old node from the Machines page and replace this instance" >&2
+  exit 1
+fi
+
+# SecObserve
+
+mkdir -p "$APP"
+cd "$APP"
+
+# The encryption and Django keys travel with the data: SecObserve encrypts some
+# stored fields with FIELD_ENCRYPTION_KEY, and a restored database is
+# unreadable under a new one. The first box saves them; later boxes restore.
+KEYS="$(secret "$KEYS_SECRET")"
+if ! jq -e 'has("field_encryption_key")' >/dev/null 2>&1 <<<"$KEYS"; then
+  KEYS="$(jq -n \
+    --arg django "$(python3 -c 'import secrets; print(secrets.token_urlsafe(50))')" \
+    --arg field "$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')" \
+    '{django_secret_key: $django, field_encryption_key: $field}')"
+  put_secret "$KEYS_SECRET" <<<"$KEYS"
+fi
+
+DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+install -m 600 /dev/null .env
+cat > .env <<ENV
+VERSION=$VERSION
+DATABASE_PASSWORD=$DB_PASSWORD
+ADMIN_PASSWORD=$ADMIN_PASSWORD
+DJANGO_SECRET_KEY=$(jq -r .django_secret_key <<<"$KEYS")
+FIELD_ENCRYPTION_KEY=$(jq -r .field_encryption_key <<<"$KEYS")
+FQDN=$FQDN
+ENV
+unset KEYS DB_PASSWORD
+
+# Upstream's compose file routes by hostname through Traefik, which needs the
+# Docker socket. Here `tailscale serve` routes by path, so Traefik is gone, and
+# each service listens on the loopback only.
+cat > docker-compose.yml <<'COMPOSE'
+services:
+  postgres:
+    image: postgres:15.19-alpine
+    environment:
+      POSTGRES_DB: secobserve
+      POSTGRES_USER: secobserve
+      POSTGRES_PASSWORD: $${DATABASE_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  backend:
+    image: ghcr.io/secobserve/secobserve-backend:$${VERSION}
+    depends_on: [postgres]
+    environment:
+      ADMIN_USER: admin
+      ADMIN_PASSWORD: $${ADMIN_PASSWORD}
+      ADMIN_EMAIL: admin@example.com
+      DATABASE_ENGINE: django.db.backends.postgresql
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_DB: secobserve
+      DATABASE_USER: secobserve
+      DATABASE_PASSWORD: $${DATABASE_PASSWORD}
+      # tailscale serve proxies with the target's host, 127.0.0.1.
+      ALLOWED_HOSTS: $${FQDN},127.0.0.1,localhost
+      CORS_ALLOWED_ORIGINS: https://$${FQDN}
+      DJANGO_SECRET_KEY: $${DJANGO_SECRET_KEY}
+      FIELD_ENCRYPTION_KEY: $${FIELD_ENCRYPTION_KEY}
+    ports:
+      - "127.0.0.1:5000:5000"
+  frontend:
+    image: ghcr.io/secobserve/secobserve-frontend:$${VERSION}
+    environment:
+      API_BASE_URL: https://$${FQDN}/api
+      OIDC_ENABLE: "false"
+      OIDC_AUTHORITY: dummy
+      OIDC_CLIENT_ID: dummy
+      OIDC_REDIRECT_URI: https://$${FQDN}
+      OIDC_POST_LOGOUT_REDIRECT_URI: https://$${FQDN}
+    ports:
+      - "127.0.0.1:3000:3000"
+volumes:
+  postgres_data:
+COMPOSE
+
+# Restore the newest dump, if there is one, before the backend starts. Its
+# entrypoint then finds the admin user and leaves it alone, so the password and
+# upload token already in Secrets Manager stay valid.
+# shellcheck disable=SC2016 # the backticks are a JMESPath literal, not a command
+LATEST_DUMP="$(aws s3api list-objects-v2 --region "$REGION" --bucket "$BACKUP_BUCKET" \
+  --prefix pg/ --query 'sort_by(Contents || `[]`, &Key)[-1].Key' --output text)"
+if [[ "$LATEST_DUMP" != None ]]; then
+  docker compose up -d postgres
+  until docker compose exec -T postgres pg_isready -U secobserve -d secobserve >/dev/null 2>&1; do
+    sleep 5
+  done
+  aws s3 cp --region "$REGION" "s3://$BACKUP_BUCKET/$LATEST_DUMP" - \
+    | gunzip | docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U secobserve -d secobserve
+  echo "restored $LATEST_DUMP"
+fi
+
+docker compose up -d
+
+API=http://127.0.0.1:5000/api
+deadline=$((SECONDS + 900))
+until curl -s -o /dev/null -w '%%{http_code}' "$API/status/version/" | grep -qE '^(200|401)$'; do
+  if ((SECONDS >= deadline)); then
+    echo "the backend did not come up; see: docker compose logs backend" >&2
+    exit 1
+  fi
+  sleep 10
+done
+
+# On a fresh database: keep the admin password, create the product, and give
+# lab a token with the Upload role, which may import and nothing else.
+if [[ "$LATEST_DUMP" == None ]]; then
+  printf '%s' "$ADMIN_PASSWORD" | put_secret "$ADMIN_SECRET"
+  JWT="$(jq -n --arg p "$ADMIN_PASSWORD" '{username: "admin", password: $p}' \
+    | curl -sf -H 'Content-Type: application/json' -d @- "$API/authentication/authenticate/" | jq -r .jwt)"
+  PRODUCT="$(curl -sf -H "Authorization: JWT $JWT" -H 'Content-Type: application/json' \
+    -d '{"name": "Precogly", "description": "Precogly as deployed by the lab."}' "$API/products/" | jq -r .id)"
+  curl -sf -H "Authorization: JWT $JWT" -H 'Content-Type: application/json' \
+    -d "{\"product\": $PRODUCT, \"role\": 2, \"name\": \"lab\"}" "$API/product_api_tokens/" \
+    | jq -j .token | put_secret "$TOKEN_SECRET"
+  unset JWT
+fi
+unset ADMIN_PASSWORD
+
+# Nightly dump to S3. Keys sort by time, which the restore above relies on.
+cat > /usr/local/bin/secobserve-backup <<BACKUP
+#!/bin/bash
+set -euo pipefail
+cd $APP
+docker compose exec -T postgres pg_dump -U secobserve -d secobserve \\
+  | gzip | /snap/bin/aws s3 cp --region $REGION - "s3://$BACKUP_BUCKET/pg/\$(date -u +%Y-%m-%dT%H%M%SZ).sql.gz"
+BACKUP
+chmod 755 /usr/local/bin/secobserve-backup
+
+cat > /etc/systemd/system/secobserve-backup.service <<'UNIT'
+[Unit]
+Description=Dump SecObserve's database to S3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/secobserve-backup
+UNIT
+
+cat > /etc/systemd/system/secobserve-backup.timer <<'UNIT'
+[Unit]
+Description=Nightly SecObserve database dump
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now secobserve-backup.timer
+
+# HTTPS on the ts.net name. tailscale serve strips a mount point before
+# proxying, so /api goes to a target that puts it back (ipnlocal/serve.go,
+# v1.104.1). --bg persists across reboots.
+tailscale serve --bg --https=443 --set-path / http://127.0.0.1:3000
+tailscale serve --bg --https=443 --set-path /api http://127.0.0.1:5000/api
+
+TS_IP="$(tailscale ip -4)"
+deadline=$((SECONDS + 600))
+until curl -sf -o /dev/null --resolve "$FQDN:443:$TS_IP" "https://$FQDN/" \
+  && curl -s -o /dev/null -w '%%{http_code}' --resolve "$FQDN:443:$TS_IP" \
+    "https://$FQDN/api/status/version/" | grep -qE '^(200|401)$'; do
+  if ((SECONDS >= deadline)); then
+    echo "https://$FQDN did not answer; see: docker compose ps, tailscale serve status" >&2
+    exit 1
+  fi
+  sleep 15
+done
+echo "SecObserve is up at https://$FQDN/"

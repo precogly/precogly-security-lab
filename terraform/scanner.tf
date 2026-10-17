@@ -169,3 +169,18 @@ resource "aws_instance" "scanner" {
 
   tags = { Name = "${var.project}-scanner" }
 }
+
+# lab's SecObserve upload token, for the upload at the end of each run.
+resource "aws_iam_role_policy" "scanner_read_upload_token" {
+  name = "read-secobserve-upload-token"
+  role = aws_iam_role.scanner.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "secretsmanager:GetSecretValue"
+      Resource = aws_secretsmanager_secret.secobserve_upload_token.arn
+    }]
+  })
+}

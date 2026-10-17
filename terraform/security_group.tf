@@ -54,3 +54,13 @@ resource "aws_security_group" "defectdojo" {
 
   tags = { Name = "${var.project}-defectdojo" }
 }
+
+# SecObserve is reached over the tailnet like the instance: people on the UI,
+# the scanner box for uploads, both through `tailscale serve` on 443.
+resource "aws_security_group" "secobserve" {
+  name        = "${var.project}-secobserve"
+  description = "SecObserve: the findings record, reached only over the tailnet"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project}-secobserve" }
+}
