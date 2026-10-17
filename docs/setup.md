@@ -1,7 +1,7 @@
 # Setup
 
-Standing the lab up from nothing, in the order the steps have to happen. The
-reasoning behind each piece is in [`design.md`](design.md), D10–D14.
+Installing the lab, in order. The reasoning is in [`design.md`](design.md),
+D10–D14.
 
 ```text
   1. Tailscale (admin console)   MagicDNS + HTTPS, the policy        once
@@ -36,13 +36,12 @@ In the [admin console](https://login.tailscale.com/admin/dns), on the **DNS** pa
 
 ### The policy
 
-On the **Access controls** page ([direct link](https://login.tailscale.com/admin/acls/file)),
-switch to the JSON editor, replace the whole file with the policy below, put your
-own login (and any teammates') in place of the examples, and save.
+On the [**Access controls**](https://login.tailscale.com/admin/acls/file) page, in
+the JSON editor, replace the file with the policy below, with your login in place
+of the example, and save.
 
-The default policy lets every device reach every other. It must not survive: while
-it does, a compromised target reaches every laptop on the tailnet. If the file
-holds rules of your own that have nothing to do with the lab, keep those.
+The default allow-all rule must go: while it exists, a compromised target reaches
+every laptop. Keep any rules of your own unrelated to the lab.
 
 ```jsonc
 {
@@ -84,12 +83,11 @@ terraform plan -out=lab.tfplan
 terraform apply lab.tfplan
 ```
 
-`terraform.tfvars` is gitignored. The apply creates the network, the three boxes,
-an empty auth-key secret per box, and DefectDojo's backup bucket. Each box boots and
-waits for its key.
+The apply creates the network, the three boxes, an empty auth-key secret per box
+and DefectDojo's backup bucket. Each box boots and waits for its key.
 
-Read every plan for `aws_instance.*` lines before applying. Two things replace a
-box with no change of your own:
+Check every plan for `aws_instance.*` replacements. Two things cause one with no
+change of your own:
 
 - **A push to Precogly's `main`.** The branch is resolved to a commit on every plan,
   so the next apply after a push rebuilds the instance and its database.
@@ -111,8 +109,8 @@ For each box, in the admin console under **Settings → Keys → Generate auth k
 | Tags | the box's tag, below |
 | Expiration | 1 day |
 
-Then put the key in that box's secret. Match the tag to the secret: a key in the
-wrong secret joins the wrong box under the wrong tag.
+Put each key in its box's secret. A key in the wrong secret joins the wrong box
+under the wrong tag.
 
 | Box | Tag | Secret |
 |---|---|---|
@@ -157,10 +155,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://pentest.<tailnet>.ts.net/     
 tailscale ip -4                                                                        # note it
 ```
 
-From the instance and from DefectDojo, over SSM, the scanner box's port 22 must not
-answer, although Tailscale SSH listens there. This is the check that the default
-policy is gone. Use the scanner's address from above: neither box resolves tailnet
-names, and `tailscale ping` tests the path between nodes rather than the policy.
+From the instance and from DefectDojo, over SSM, the scanner's port 22 must not
+answer: proof the default policy is gone. Use the scanner's address, since neither
+box resolves tailnet names; `tailscale ping` tests the path, not the policy.
 
 ```sh
 nc -z -w 5 <scanner tailnet IP> 22 && echo "OPEN: fix the policy" || echo closed

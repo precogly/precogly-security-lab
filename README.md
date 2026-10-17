@@ -1,14 +1,10 @@
 # precogly-security-lab
 
-Precogly's security lab: Precogly deployed the way its users deploy it, with
-scanners and pentest agents pointed at it and every finding recorded in DefectDojo.
+Precogly's security lab: a Precogly deployment for scanners and pentest agents to
+attack, with findings recorded in DefectDojo.
 
-The lab runs on AWS and is reachable only over a Tailscale tailnet. Nothing in it
-accepts a connection from the internet; the tailnet policy decides who and what
-reaches each box.
-
-It is not a hosting offering. Hosting Precogly stays out of scope for the project
-([#66][66]); the lab exists to test it.
+It runs on AWS, reachable only over Tailscale. It is not a hosting offering
+([#66][66]).
 
 ## How it works
 
@@ -34,9 +30,8 @@ It is not a hosting offering. Hosting Precogly stays out of scope for the projec
 - **defectdojo** is [DefectDojo][dd], self-hosted. The lab keeps no findings of its
   own.
 
-Every scan runs through one command, `lab`, against one job contract, so adding a
-scanner is one small definition file rather than another script. `lab` is being
-built; see Status.
+Every scan runs through one command, `lab`, so adding a scanner is one definition
+file, not another script. `lab` is being built.
 
 ## Repository layout
 
@@ -50,10 +45,8 @@ built; see Status.
 
 ## Getting started
 
-Follow [`docs/setup.md`](docs/setup.md). In short: configure the tailnet's DNS and
-policy once, `terraform apply`, give each box a Tailscale auth key, and run the
-checks. You need an AWS account, Terraform 1.15, the AWS CLI, and admin on the
-tailnet.
+Follow [`docs/setup.md`](docs/setup.md): tailnet DNS and policy, `terraform apply`,
+an auth key per box, then the checks.
 
 ## Status
 
@@ -65,14 +58,12 @@ tailnet.
 | Cross-tenant harness | route walk built; replayer not yet written |
 | Fargate scan jobs, orchestration | later phases, not started |
 
-The first milestone is the cross-tenant harness finding one of the open Precogly
-authorization bugs, [#226][226], [#227][227] or [#405][405], as a finding in
-DefectDojo.
+First milestone: the harness finds [#226][226], [#227][227] or [#405][405], open
+Precogly authorization bugs, as a DefectDojo finding.
 
 ## Design
 
-Read [`docs/design.md`](docs/design.md) before adding anything. Two of its
-anti-goals are cheap to walk into:
+Read [`docs/design.md`](docs/design.md) before adding anything. Two anti-goals:
 
 - **Do not reinvent DefectDojo.** A findings database, cross-tool dedup or a triage
   UI is solved upstream.
