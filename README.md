@@ -31,7 +31,7 @@ It runs on AWS, reachable only over Tailscale. It is not a hosting offering
   own.
 
 Every scan runs through one command, `lab`, so adding a scanner is one definition
-file, not another script. `lab` is being built.
+file, not another script. See [`lab/README.md`](lab/README.md).
 
 ## Repository layout
 
@@ -54,7 +54,9 @@ an auth key per box, then the checks.
 |---|---|
 | Network, Precogly, scanner box, DefectDojo | running, with isolation checked |
 | DefectDojo backups and restore | nightly dump to S3; restore tested once |
-| `lab` CLI and job contract | designed, being built |
+| `lab` CLI | `lab jobs`, `lab run`, `--dry-run` built and tested; first real run pending |
+| Jobs | `zap-baseline`; the harness next |
+| `lab run --check` | designed, not built |
 | Cross-tenant harness | route walk built; replayer not yet written |
 | Fargate scan jobs, orchestration | later phases, not started |
 
