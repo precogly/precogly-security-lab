@@ -1007,50 +1007,28 @@ lab run <job> --dry-run        print the resolved image, command, mounts and env
 - **Install:** the scanner box installs `lab` from
   `github.com/precogly/precogly-security-lab` at a commit, with `uv tool install`.
 
-### D15 — The record moves to GitHub code scanning on Precogly's repository
+### D15 — GitHub code scanning as the record: tried, and rejected
 
-**Chosen** (2026-10-17): each job's report is SARIF, and `lab` uploads it to code
-scanning on `precogly/precogly`, one category per job. This replaces DefectDojo as
-the record in D14; the job contract, `lab` and the one run path stay.
+**Rejected** (2026-10-17), after a trial; DefectDojo stays the record in D14 for now,
+and SecObserve is being tried next.
 
-- **Why:** DefectDojo's value to the lab was its parsers and the run-to-run
-  lifecycle. Code scanning gives the lifecycle with no box: on a trial repository,
-  three tools' SARIF uploaded against two commits kept 2,968 alerts with no
-  duplicates, and recorded one analysis per job per commit with its
-  `results_count`. The core team is already on GitHub, and Precogly already uploads
-  OpenSSF Scorecard results to the same tab. Exporting for an agent is `gh api`.
-- **What `lab` does to each report before upload:** rewrites paths from the
-  container's (`/in/precogly-source/...`) to the repository's, since GitHub opens a
-  new alert whenever a result's path differs between analyses; and sets
-  `runAutomationDetails.id` to the job's name, since two runs of one tool (the two
-  Trivy jobs) without a category would replace each other's alerts.
-- **Reports are SARIF.** Semgrep and Trivy write it natively. ZAP's baseline script
-  cannot, so the ZAP job runs a ZAP Automation Framework plan with the `sarif-json`
-  report template. The harness writes SARIF.
-- **Rejected: keeping DefectDojo.** It works, but most of it is unused, and it costs
-  a box, backups and upgrades. Its metrics pages were not needed: charts are built
-  from GitHub's API, from each analysis's `results_count` and each alert's opened,
-  fixed and dismissed times.
-- **Rejected: SecObserve.** Lighter than DefectDojo and close to the lab's needs, but
-  maintained mostly by one person since December 2025, and still a box to run.
-- **Rejected: a private repository.** Code scanning on private repositories needs a
-  paid GitHub Code Security licence, and the `precogly` org is on the free plan.
-  Alerts on a public repository are listable only by people with Write access.
+The idea was to upload each job's report as SARIF to code scanning on
+`precogly/precogly`, where Precogly already uploads OpenSSF Scorecard results, and
+drop the DefectDojo box. The trial, on a copy of PyGoat: Semgrep and two Trivy scans
+uploaded against two commits kept 2,968 alerts with no duplicates, and recorded one
+analysis per job per commit with its `results_count`. So the lifecycle works.
 
-**What it costs.**
-
-- The scanner box holds a fine-grained token for `precogly/precogly` with code
-  scanning write access. That permission can also dismiss alerts, so a compromised
-  agent could hide findings, the same exposure the DefectDojo token had.
-- No built-in charts: the free plan has no organization security overview (no
-  "Security and quality" tab on the `precogly` org, checked 2026-10-17). Charts are
-  `lab`'s to generate.
-- Findings with no file in the repository, such as vulnerabilities inside an image,
-  point at paths GitHub cannot open.
-- GitHub keeps the top 5,000 results per upload, by severity.
-- DefectDojo's history does not carry over; the series restarts on GitHub.
-  DefectDojo keeps running until two real runs have reached GitHub, then its box,
-  backup bucket and secrets are removed.
+- **What disqualified it:** uploading needs a token with code scanning write access
+  to Precogly's real repository, held on the scanner box beside untrusted agents.
+  That access can also dismiss alerts there. A self-hosted store's token reaches only
+  the lab's own box.
+- **Also against it:** no built-in charts on the free plan (the `precogly` org has no
+  "Security and quality" tab), and code scanning on a private repository needs a paid
+  licence.
+- **Carried forward:** GitHub opens a new alert whenever a result's path differs
+  between uploads, so `lab` rewrites container paths (`/in/precogly-source/...`) to
+  repository paths before sending a report anywhere; and two runs of one tool need
+  distinct categories, or the second replaces the first's alerts.
 
 ## The AI layer
 
