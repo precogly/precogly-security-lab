@@ -59,7 +59,7 @@ an auth key per box, then the checks.
 | `lab auth`, `lab findings` (export for agent triage) | built; checked against the live record |
 | `lab run --remote` (run from a laptop, follow, export) | built; checked end to end on the scanner box |
 | `lab run --check` | designed, not built |
-| Cross-tenant harness | route walk built; replayer not yet written |
+| Cross-tenant harness | Schemathesis against a throwaway Precogly (D13); being built |
 | Fargate scan jobs, orchestration | later phases, not started |
 
 First milestone: the harness finds [#226][226], [#227][227] or [#405][405], open

@@ -595,78 +595,136 @@ needs no IAM identity to run a scan.
 - One more machine to patch and pay for. Neither box's size has been checked against
   what the scanners need; stop both when idle.
 
-### D13 — The cross-tenant harness: a route walk and a replayer, regenerated every run
+### D13 — The cross-tenant harness: Schemathesis against a Precogly of its own
 
-**Chosen:** the harness is two pieces that run together on the scanner box, every
-run, with nothing stored between runs.
+**Chosen:** the harness is one job, `schemathesis`. It fuzzes the whole API of a
+throwaway Precogly, built for that job at the commit the instance deploys, and a check
+of the lab's own replays every read of one tenant's object as the other tenant.
 
 ```text
   terraform plan: precogly_branch ("main") ──► GitHub API ──► commit SHA
         │
         ├──► instance user data: deploy that commit (replaced when it changes)
-        │
         └──► SSM parameter, written by Terraform only
                   │
-  scanner box, each run:
-     1. read the SHA
-     2. check out Precogly at that SHA, build its backend image
-     3. route walk  (inside that image)  ──► route list, in memory
-     4. replayer    (over HTTPS, tailnet) ──► instance
-          list tenant A's objects as admin@precogly.dev
-          request each detail URL as contoso@precogly.dev
-          assert 403 or 404 on every one
+  scanner box, the schemathesis job:
+     1. read the SHA; build Precogly's backend image at it (cached per SHA)
+     2. docker compose -p lab-<run>-schemathesis up, on a network with no way out:
+          db       postgres:16, empty
+          seed     the backend image: migrate, seed; exits
+          backend  the backend image, the instance's settings
+     3. schemathesis ──► http://backend:8000, logged in as admin@ (Demo Organization)
+          fuzzes every operation the schema lists, writes included
+          CrossTenant: each of admin@'s successful reads, lists and writes,
+                       re-sent as contoso@ (Contoso Financial), must not
+                       reach a Demo object
+     4. failures, and object reads never probed ──► SARIF ──► SecObserve
+     5. docker compose down -v, whatever happened
 ```
 
-- **The route walk** imports Django's URL configuration in the backend image and
-  enumerates every pattern that takes an object identifier. It walks the whole
-  resolver, not only the DRF routers. At `94dd831` (2026-10-16) the eight API apps
-  register 49 viewsets on routers, and also carry hand-written `path()` views, such as
-  `scoring-methods/` in `threats/urls.py`, which a router walk would miss. Detail
-  `@action` routes come with the viewsets. The script lives in the lab repo and is
-  mounted into the container, so nothing goes upstream.
-- **The replayer** needs a tenant A object for each route, found by listing as tenant
-  A. A route with no list route, or one tenant A owns nothing on, cannot be replayed;
-  the replayer reports it as skipped and names it, rather than counting it as a pass.
-  The seed provides two organizations for this: Demo Organization (`admin@`,
-  `analyst@`) and Contoso Financial (`contoso@`), whose only member belongs to no
-  other.
-- **Why two pieces:** the AppSec plan's harness walks the router so that no route can
-  be missed, which needs Django. The lab's harness has to measure the deployment, from
-  the scanner box, over the path people use. The walk supplies completeness and the
-  replayer supplies the path. The assertion is written once.
-- **Why regenerated every run:** a route list stored between runs goes stale when the
-  code moves, and a stale list silently skips any route added since. Generating it
-  from the commit the instance runs, at the start of every run, removes the step
-  someone could forget.
+- **Why Schemathesis and not a route walk of our own.** The first design walked
+  Django's URL resolver for completeness, because routes from the schema might miss
+  some. Measured at `94dd831` (2026-10-18): of 112 `api/` routes that take an object
+  identifier, the schema served at `/api/schema/` lists 111. The one it lacks is
+  `/api/auth/registration/account-confirm-email/{key}/`, a confirmation key and no
+  tenant's object. Schemathesis also fuzzes, which a replayer would not. The walk
+  (`harness/route_walk.py`) is retired.
+- **The check is the lab's, on Schemathesis's public API.** `CrossTenant` is a check
+  class that re-sends `admin@`'s successful requests with `contoso@`'s token, through
+  `case.call(headers=...)`, in three ways, one for each shape of the milestone's bugs:
+
+  | probe | re-sent as `contoso@` | fails when | milestone bug it is for |
+  |---|---|---|---|
+  | read | each 2xx `GET` of one object | anything but 403 or 404 | #227's leak |
+  | list | each 2xx `GET` of a collection | a Demo-owned ID is in it | #405 |
+  | write | each 2xx write that names a Demo-owned ID, in the path or the body | a 2xx | #226, #227's writes |
+
+  An ID is Demo-owned when `admin@` created it in this run, or when `contoso@`'s read
+  of it was refused. A shipped framework every tenant may see is never Demo-owned, so
+  it raises nothing; a component `admin@` created with no organization is, so #227's
+  leak is caught. Writes are replayed because the stack is thrown away; against the
+  instance they would not be.
+- **Rejected: Schemathesis's own `object_level_authorization`.** It replays reads
+  only, never writes, so #226 is out of its reach. It passes a peer that receives
+  masked fields, or that can list the object, which between tenants is still a leak.
+  It first shipped in 4.31.0 (2026-10-12) and was being fixed the week after, and
+  extending it would mean its internal modules.
+- **A read never probed is a finding, not a pass.** At the end of the run the check
+  lists each object `GET` in the schema that never answered `admin@` with a 2xx, so was
+  never replayed, and each becomes a low-severity finding named by its route. It
+  resolves in SecObserve once a run probes it.
+- **Full fuzzing writes, so the job gets a Precogly no one else uses.** Jobs do not
+  share a database. Fuzzing the instance would scramble the data every other job and
+  every person sees. The stack is new for each job and deleted after it, so nothing one
+  run does reaches the next, and no running backend is pointed at a new database: each
+  job starts its own.
+- **The stack copies the instance's settings**, so the two do not drift: the
+  `postgres:16-alpine` image, the backend image at the SHA, and the instance's
+  `workshop.py` settings, which trust Caddy's `X-Forwarded-Proto`; Schemathesis sends
+  that header as Caddy does, or production settings redirect every request to HTTPS.
+  `ALLOWED_HOSTS` is the service name, `backend`.
+- **The network has no way out.** The scanner box's job containers can reach tailnet
+  peers as `tag:scanner`. A fuzzed backend with a request-forgery bug could use that to
+  reach SecObserve or the instance, so the stack's network is `internal` and the backend
+  reaches only its database. Precogly's AI features fail there, which a fuzz run does not
+  need.
+- **`/api/auth/` is not fuzzed.** The run's own logins are there: fuzzing logout,
+  password changes and token refresh as `admin@` can lock the run out of the account
+  it tests with. Login is how the run authenticates, so it is exercised, if not fuzzed.
+  Access tokens last 60 minutes (`SIMPLE_JWT`), so the run logs in again when one
+  expires.
+- **Shaped for Phase B.** Each Compose service is one container of a future Fargate
+  task: containers in one task reach each other on `localhost`, ECS's `dependsOn`
+  has `HEALTHY` and `SUCCESS` for Compose's `service_healthy` and
+  `service_completed_successfully`, and when the essential container, the scanner,
+  exits, ECS stops the rest. Addresses are configuration, never written into a
+  container, since Compose names services and Fargate uses `localhost`.
 - **Why the SHA comes from Terraform and not from the instance:** the instance is the
-  target. If it published its own route list or commit, a compromised target could
-  hide a route from the harness. Terraform writes the SHA, and no role on either box
-  has `ssm:PutParameter`. Both boxes can read it, because
-  `AmazonSSMManagedInstanceCore` grants `ssm:GetParameter` on every parameter; a
-  public commit SHA loses nothing by that.
+  target. If it published its own commit, a compromised target could choose what the
+  harness builds and tests. Terraform writes the SHA, and no role on either box has
+  `ssm:PutParameter`. Both boxes can read it, because `AmazonSSMManagedInstanceCore`
+  grants `ssm:GetParameter` on every parameter; a public commit SHA loses nothing by
+  that.
 - **The branch is resolved to a SHA at plan time**, by Terraform's `http` data source
   against `GET /repos/precogly/precogly/commits/<branch>` with `Accept:
   application/vnd.github.sha`, which returns the bare SHA (checked 2026-10-17;
   unauthenticated, 60 requests an hour). Both boxes then use that SHA, never the branch
   name. A branch name passed through would deploy whatever the branch held at boot
-  while the replayer checked out whatever it held at run time. Resolving on every plan
-  keeps the lab on `main` with no bump step to forget.
+  while the harness built whatever it held at run time. Resolving on every plan keeps
+  the lab on `main` with no bump step to forget.
 - **Rejected: a pinned SHA in `terraform.tfvars`, bumped by hand.** No surprise
   rebuilds, but the instance lags `main` until someone bumps it, and the bump is one
   more step that can be forgotten.
-- **Rejected: a manifest generated on the instance and published.** One build instead of
-  two, but the target writes the harness's input. It also needs a bucket or a served
-  file, and a served file is an endpoint real installs do not have.
-- **Rejected: routes from the OpenAPI schema.** No Django needed, but a route missing
-  from the schema is a silent gap, and the schema is not known to be exposed.
-- **Rejected: the harness inside the app only** (pytest or a `manage.py` command in the
-  backend container). Complete, but it tests the code's authorization without the
-  deployment, and it does not run from the scanner box.
+- **Rejected: fuzzing the instance.** Its database is shared by every job and by the
+  people using it.
+- **Rejected: a second instance on the instance's box, reset before each fuzz job** by
+  an SSM document the scanner may send. It would fuzz through Caddy, TLS and Tailscale,
+  but it gives a box that runs untrusted code a lever on the target, as safe as one IAM
+  policy, and the reset races anyone using the box. The research behind this and the
+  next two is in the 2026-10-18 log entry.
+- **Rejected: preview-environment tools** (Argo CD's pull-request generator, Signadot,
+  Okteto). They assume Kubernetes, and they share an expensive baseline across many
+  developers' branches, which this lab does not have.
+- **Rejected for now: a seeded template database cloned per job** (`CREATE DATABASE
+  ... TEMPLATE`). Faster than seeding each time, but with one fuzz job a fresh Postgres
+  container is isolation enough. Revisit if seeding proves slow or writing jobs
+  multiply.
 
 **What it costs.**
 
+- It tests the code and its settings, not the deployment. Caddy, TLS, Tailscale and
+  the frontend are not in the stack, so an authorization bug that exists only through
+  them is missed. Nothing reads the instance cross-tenant; add a read-only replay
+  against it if that becomes the gap that matters.
+- A route the schema leaves out is not tested, and with the walk retired nothing
+  re-measures that gap. One in 112 at `94dd831`; rerunning the walk, kept in git
+  history, measures it again.
+- The settings are a copy. A change to the instance's settings has to be made to the
+  stack's too.
+- Each job pays a migrate and a seed, and runs a second backend on the box that holds
+  the SecObserve upload token, mitigated by the network with no way out.
 - The scanner box builds Precogly's backend image: minutes on the first run of each
-  SHA, cached after that. Building it needs Docker and the repo on the box.
+  SHA, cached after that.
 - Any apply after a push to `main` replaces the instance and loses its database, even
   an apply made only to change something else. The plan shows the replacement, but in
   an unrelated change it is easy to approve without noticing. Read the plan for
@@ -675,12 +733,6 @@ run, with nothing stored between runs.
   plan fails rather than deploying a guess.
 - A finding cannot be reproduced on an old commit without a pin. Add an optional
   override when that is first needed.
-- The walk reads the code at the SHA, not the running instance. A change made by hand
-  on the box would go unnoticed. That is a deliberate act, not something forgotten, so
-  it is left uncovered.
-- Importing the URL configuration needs no database: the walk ran clean in the
-  backend image at `94dd831` (2026-10-17), finding 366 `api/` routes, of which 172
-  are DRF's `.{format}` copies and 194 are real, 112 of them taking parameters.
 
 ### D14 — One run path: a job contract, a `lab` CLI, and SecObserve as the record
 
@@ -1085,9 +1137,9 @@ What `lab` gives every job container:
   - `precogly-images`: the backend and frontend images, saved as `backend.tar` and
     `frontend.tar`, for image scanning (`trivy image --input`, checked at v0.76.0).
 
-  An image named `@<name>` is one of a run's built images rather than a registry image:
-  the harness runs in `@precogly-backend` for the route walk, and running the replayer
-  in the same container keeps the harness one job with one report.
+  - `precogly-stack`: a throwaway Precogly of the job's own, at the run's commit, on a
+    network with no way out (D13). `{target_url}` is then that stack, not the
+    instance, and the stack is deleted when the job ends.
 - **A target is a TOML file too**, `lab/src/lab/targets/pentest.toml`: URL and the
   seed's logins. The logins are the seed's published constants, so they are not
   secrets. Jobs and targets combine at run time, which is what makes it N + M files.
@@ -1215,9 +1267,9 @@ defect end to end.**
    with one product, branch `main`, and one service per job (D14).
 4. `lab`, the one run path (D14): the job contract, a job definition per tool, and
    the upload to SecObserve as each run's last step.
-5. The custom cross-tenant harness (D13) as the first job: the route walk and the
-   replayer, with `main` resolved to a SHA at plan time and published to an SSM
-   parameter only Terraform writes.
+5. The cross-tenant harness (D13): Schemathesis fuzzing a throwaway Precogly at the
+   instance's commit, with the lab's `CrossTenant` check, and `main` resolved to a
+   SHA at plan time and published to an SSM parameter only Terraform writes.
 
 Done when the harness finds [#226](https://github.com/precogly/precogly/issues/226),
 [#227](https://github.com/precogly/precogly/issues/227), or
@@ -1307,6 +1359,18 @@ they did not — the same discipline the AppSec plan holds itself to.
   sandbox is designed first, the agent chosen second.
 
 ## Log
+
+- **2026-10-18 (Schemathesis)** — D13 rewritten: the harness is Schemathesis fuzzing a
+  throwaway Precogly, with a check of the lab's, instead of a route walk and a
+  replayer. The schema the first D13 rejected turned out served at `/api/schema/`,
+  and against the walk it lacks one object route of 112, a confirmation key. Fuzzing
+  writes, so the job gets a stack of its own; research on how others isolate per-job
+  environments found the same answer used in CI (a Compose stack per job, as
+  Schemathesis's and StackHawk's CI guides do), preview-environment tools built for
+  Kubernetes and for sharing baselines, and a Fargate task as the same stack in AWS.
+  Resetting the shared instance was rejected by it too. Reading the milestone's bugs
+  against the first draft of the check showed a read-only replay would catch at most
+  one of #226, #227 and #405, so the check replays lists and writes as well.
 
 - **2026-10-17 (SecObserve)** — D14 rewritten: SecObserve replaces DefectDojo as the
   record. DefectDojo worked but was mostly unused weight. GitHub code scanning was
