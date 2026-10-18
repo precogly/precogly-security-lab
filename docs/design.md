@@ -816,8 +816,8 @@ lab findings --status false-positive --status risk-accepted
 - **It reads SecObserve, not raw reports**, so the export is the deduplicated record
   with the team's assessments applied, using the count definition above.
 - **It runs on any machine on the tailnet**, with the person's own SecObserve API token
-  in `SECOBSERVE_TOKEN` (User settings, Create API token). It needs no AWS access, no
-  Docker and no scanners; those stay on the scanner box.
+  from `lab auth login`. It needs no AWS access, no Docker and no scanners; those stay
+  on the scanner box.
 - **The agent never holds a credential.** It reads a file. Pointing it at the API
   instead would hand it a token that can also change assessments.
 - **By default it exports the active statuses**: Open, Affected and In review, the
@@ -859,6 +859,50 @@ lab findings --status false-positive --status risk-accepted
 - Not built: writing assessments back. The agent proposes, a person records the
   decision in SecObserve. Applying a decisions file would need write access, so it is
   a separate decision.
+
+**Logging in: `lab auth`.** A person's token comes from lab, not from a page in
+SecObserve's settings, following `gh auth`.
+
+```text
+lab auth login     check the tailnet and SecObserve, then mint and store a token
+lab auth status    where tailscale is, whether SecObserve answers, the token's source and expiry
+lab auth logout    revoke the token in SecObserve, then forget it
+```
+
+- **`login` checks before it asks.** It finds tailscale, reads the tailnet, and checks
+  that SecObserve answers, so a network problem is reported as one rather than as a
+  failed login. Then it prompts for the SecObserve username and the password, without
+  echo, or reads the password from stdin with `--password-stdin`, as `docker login`
+  does. It ends `✓ Logged in to secobserve.<tailnet> as <user>; token expires <date>`.
+- **The token is minted from the password**, with SecObserve's
+  `/api/authentication/create_user_api_token/`, the endpoint its own settings page
+  calls. It is named `lab-<hostname>`; names are unique per user, so logging in again
+  revokes that machine's previous token first.
+- **It lives in the system keyring**, through `keyring`: the macOS Keychain, the
+  Secret Service on Linux, the Credential Locker on Windows. Where there is none, as
+  on a headless box, `login` fails and says to set `SECOBSERVE_TOKEN`, which overrides
+  the keyring anywhere, as `GH_TOKEN` does for gh. Rejected: gh's fallback to a
+  plain-text file. A file any process running as the person can read is the thing
+  the keyring exists to avoid, and the environment variable already covers machines
+  without one.
+- **Tokens expire after 90 days.** Logging in again is one prompt, and a copied token
+  stops working within a quarter; `logout` revokes at once. Tailscale's keys default
+  to 90 days for the same trade. Others differ: gh's OAuth tokens never expire, its
+  fine-grained tokens default to 30 days. A rejected token reports `SecObserve
+  rejected the token (expired or revoked). Run: lab auth login`.
+- **`logout` revokes**, unlike gh's, which only forgets the local copy and leaves the
+  token valid. It asks for the password again: SecObserve's
+  `/api/authentication/revoke_user_api_token/` takes the username and password and
+  not the token, so a stolen token cannot revoke one and mint another, and its own
+  settings page asks for the password to revoke too.
+- **The keyring holds what `status` shows**: the token, the user, the server and the
+  expiry, recorded when the token is minted, so `status` needs no SecObserve call to
+  say when it lapses.
+- **tailscale is found on PATH, then in the app.** Tailscale's own instructions for
+  its Mac App Store app add a shell alias, which a subprocess never sees, so following
+  them leaves `tailscale` off PATH. lab tries PATH, then the app's documented binary
+  at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, and only then fails,
+  linking Tailscale's install page.
 
 **Running from a laptop: `lab run --remote`.** Scanning and exporting are one step
 for whoever is triaging: scan the current commit, then read what changed.
@@ -1033,6 +1077,7 @@ lab run ... --remote [-o FILE] run on the scanner box from a laptop, then export
 lab run --remote --attach      follow the run in progress on the scanner box
 lab findings [-o FILE] [--job JOB] [--status STATUS]...
                                export active findings from SecObserve as JSON
+lab auth login|status|logout   mint, show, or revoke this machine's SecObserve token
 ```
 
 - **`--check` is how a job is developed:** run the job as a real run would, parse each
