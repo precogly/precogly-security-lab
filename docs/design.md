@@ -810,7 +810,7 @@ increasingly done with an AI agent, which needs the findings as a file rather th
 lab findings -o findings.json            # active findings, every job
 lab findings --job semgrep -o sast.json  # one job
 lab findings --status all                # every status but Resolved
-lab findings --status "False positive" --status "Risk accepted"
+lab findings --status false-positive --status risk-accepted
 ```
 
 - **It reads SecObserve, not raw reports**, so the export is the deduplicated record
@@ -826,7 +826,8 @@ lab findings --status "False positive" --status "Risk accepted"
   it follows `gh issue list --state`, which defaults to open. `--status all` adds the
   triaged statuses, so an agent can second-guess a past decision; it leaves out
   Resolved, which means the scanner stopped reporting the finding and is not a
-  finding to triage. `--status` also takes exact statuses, repeated.
+  finding to triage. `--status` also takes exact statuses, repeated, spelt as slugs
+  (`false-positive`) and checked against SecObserve's set before any request.
   Rejected as the default: everything but Resolved. The file and the page the team
   reads would disagree, and an agent would spend its time on decided findings.
 - **Flags, no prompt.** The consumer is a script or an agent, neither on a terminal.
@@ -835,10 +836,16 @@ lab findings --status "False positive" --status "Risk accepted"
 - **`--job` matches exactly.** SecObserve's `origin_service_name` filter matches a
   substring, so `--job trivy` would export both Trivy jobs. `lab findings` looks up
   the job's service by name, checks the name is equal, and filters on its ID.
-- **A small, versioned schema**: id, a link to the observation, job, status, severity,
-  title, CWE, CVEs, component and version, path and line, image, the commit scanned,
-  first seen, description. Paths are repository paths, so an agent can open the code
-  at the commit given.
+- **A small, versioned schema**: id, a link to the observation, job, scanner, status,
+  severity, title, CWE, CVEs, component and version, path and line, endpoint (for
+  DAST), image, the commit scanned, first seen, description. Paths are repository
+  paths, so an agent can open the code at the commit given.
+- **Nothing uploaded yet is an empty export, not an error.** Before a job's first
+  upload SecObserve has no service for it, and before any upload no `main` branch.
+  For an agent that is the same answer as nothing to triage, so the export is empty,
+  with a note on stderr naming what has never been uploaded. A misspelt job never
+  gets that far: `--job` is checked against the job definitions first. A missing
+  product is an error, since the SecObserve box creates it at first boot.
 - **The commit is known for image findings only.** SecObserve keeps an image's tag,
   which lab sets to the commit, but has no field for the commit of a code or DAST
   scan, and putting it in the branch or file name would make every run a new
@@ -852,6 +859,59 @@ lab findings --status "False positive" --status "Risk accepted"
 - Not built: writing assessments back. The agent proposes, a person records the
   decision in SecObserve. Applying a decisions file would need write access, so it is
   a separate decision.
+
+**Running from a laptop: `lab run --remote`.** Scanning and exporting are one step
+for whoever is triaging: scan the current commit, then read what changed.
+
+```text
+lab run --all --remote -o findings.json   # run on the scanner box, then export
+lab run --remote --attach                 # follow the run in progress
+```
+
+It cannot be one command on the scanner box: the box's token may upload and not
+read, so a compromised box cannot read the record. The laptop runs the jobs over
+Tailscale SSH and exports with the person's own token, as `lab findings` does.
+
+- **The box decides what runs.** It runs its own lab, at the commit it was
+  installed at, with that commit's job definitions; the laptop sends job names only.
+  HCP Terraform does the same with a workspace's Terraform version. A job list that
+  differs between the two is a warning, since committing locally before reinstalling
+  on the box is the normal order.
+  Rejected: the laptop installing its own lab on the box for each run, as Ansible
+  ships its modules. It removes skew entirely, but the box would run whatever is on
+  the laptop, unpushed code included, beside untrusted jobs.
+- **The run is detached and its progress is a file.** The box starts `lab run
+  --events` as the transient systemd unit `lab-run`, so a dropped SSH connection
+  does not stop it, and the run appends one JSON line per change of state to
+  `events.jsonl` in its run directory. The laptop follows that file over SSH and
+  draws it, so attaching again replays the run from its start. Ctrl-C stops the
+  drawing, not the run. Rejected: polling `meta.json`, which needs no format between
+  the two but shows a job only once it ends.
+- **The event stream has its own version.** The first event is
+  `{"type": "version", "lab": "<commit>", "events": 1}`, following Terraform's
+  machine-readable UI. The laptop refuses an `events` version it does not know and
+  names the commit to install; it ignores fields it does not know. The integer, not
+  the commit, is what must match: most commits change neither side's events.
+- **One run at a time.** The unit name is the lock: systemd refuses a second unit of
+  the same name, and `--collect` stops a failed run holding it. A second
+  `lab run --remote` reports the run in progress, who started it, when and at which
+  commit, and the command that attaches to it.
+- **Progress is per job, never a percentage.** None of the scanners reports progress
+  without a terminal, checked in their source at the pinned versions: Semgrep and
+  Grype turn their bars off, Trivy's only bar is its database download, and ZAP
+  baseline buffers its output until it exits. The laptop shows an overall bar of
+  jobs finished, and for each job a spinner, its elapsed time, and its result.
+  Rejected: an estimate from the job's last duration. It would be a guess drawn as
+  a measurement, and a job's time moves with the database download and the target.
+- **The export follows the run**, for the jobs that ran, with the active statuses.
+  It happens even when a job failed, and the exit code is non-zero if any did.
+  SecObserve is updated by each job's upload as before; the export only reads.
+- **The CLI is Typer.** Options are typed parameters, so mypy checks them, and an
+  enum parameter is its own set of choices; rich, which draws the progress, comes
+  with it. Typer is still 0.x, so any minor release may change its API; `uv.lock`
+  pins it, and an upgrade is deliberate. Rejected: Click, stable at 8.x, whose decorators
+  are matched to parameters by name, unchecked. Typer 0.27 vendors its own Click,
+  so Click's plugins do not apply either way.
 
 **Keeping the record across a replacement.** SecObserve's database is the whole
 record, and it lives on the box's root volume, so replacing the box would delete every
@@ -969,6 +1029,8 @@ lab run <job>... [--all]       run jobs against the target, then upload each rep
 lab run <job> --check          run the job twice, parse both reports offline, upload nothing
 lab run <job> --dry-run        read the real tailnet, address and commit; print every
                                change a run would make; make none
+lab run ... --remote [-o FILE] run on the scanner box from a laptop, then export
+lab run --remote --attach      follow the run in progress on the scanner box
 lab findings [-o FILE] [--job JOB] [--status STATUS]...
                                export active findings from SecObserve as JSON
 ```
