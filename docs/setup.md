@@ -214,8 +214,8 @@ the display; attach again to pick it up. One run goes at a time, and a second
 
 | | |
 |---|---|
-| Precogly | `https://pentest.<tailnet>.ts.net`, as `admin@precogly.dev` / `admin123` (or `analyst@`, `contoso@`) |
-| SecObserve | `https://secobserve.<tailnet>.ts.net`, as `admin`, password below. Filter by **Scanner** or by **Service** (one per job) |
+| Precogly | `lab open precogly`, or `https://pentest.<tailnet>.ts.net`, as `admin@precogly.dev` / `admin123` (or `analyst@`, `contoso@`) |
+| SecObserve | `lab open secobserve`, or `https://secobserve.<tailnet>.ts.net`, as `admin`, password below. Filter by **Scanner** or by **Service** (one per job) |
 | Scanner box | `ssh ubuntu@scanner` |
 | Any box | `aws ssm start-session --target <instance id>` (`terraform output` lists them) |
 

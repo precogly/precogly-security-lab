@@ -9,7 +9,9 @@ import os
 import socket
 import sys
 import uuid
+import webbrowser
 from datetime import UTC, datetime
+from enum import StrEnum
 from importlib.resources import files
 from pathlib import Path
 from typing import Annotated
@@ -75,6 +77,46 @@ def list_jobs() -> None:
     for job in load_jobs(_definitions("jobs")).values():
         inputs = ", ".join(sorted(job.inputs)) or "-"
         print(f"{job.name:<18} {job.report:<18} {inputs:<16} {job.image}")
+
+
+class Box(StrEnum):
+    """What `lab open` opens. `precogly` is an alias: the machine is `pentest`."""
+
+    PENTEST = "pentest"
+    PRECOGLY = "precogly"
+    SECOBSERVE = "secobserve"
+
+
+def _box_urls(runner: CommandRunner) -> dict[str, str]:
+    tailnet = tailscale.tailnet_suffix(runner)
+    target = load_target(_definitions("targets") / f"{TARGET}.toml")
+    return {
+        "pentest": target.url(tailnet),
+        "secobserve": f"https://{SECOBSERVE_HOST}.{tailnet}",
+    }
+
+
+@app.command("open")
+def open_box(
+    box: Annotated[
+        Box | None, typer.Argument(help="The box to open; none lists them.")
+    ] = None,
+    no_browser: Annotated[
+        bool, typer.Option("--no-browser", "-n", help="Print the URL; open nothing.")
+    ] = False,
+) -> None:
+    """Open Precogly or SecObserve in the browser, or print its URL."""
+    urls = _box_urls(LiveRunner())
+    if box is None:
+        for name, url in urls.items():
+            print(f"{name:<12} {url}")
+        return
+    url = urls["pentest" if box is Box.PRECOGLY else box.value]
+    if no_browser:
+        print(url)
+    elif not webbrowser.open(url):
+        print(f"lab: no browser to open; the URL is {url}", file=sys.stderr)
+        raise typer.Exit(1)
 
 
 @app.command()
