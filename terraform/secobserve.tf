@@ -36,7 +36,10 @@ resource "aws_secretsmanager_secret" "secobserve_keys" {
   recovery_window_in_days = 0
 }
 
-# Nightly database dumps, restored at first boot.
+# Nightly database dumps, restored at first boot. Bucket names are global,
+# hence the account ID.
+data "aws_caller_identity" "current" {}
+
 resource "aws_s3_bucket" "secobserve_backups" {
   bucket = "${var.project}-secobserve-backups-${data.aws_caller_identity.current.account_id}"
 }

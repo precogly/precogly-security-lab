@@ -75,21 +75,6 @@ resource "aws_iam_role_policy" "scanner_authkey" {
   })
 }
 
-# lab's DefectDojo token, for the reimport at the end of each run.
-resource "aws_iam_role_policy" "scanner_read_lab_token" {
-  name = "read-lab-token"
-  role = aws_iam_role.scanner.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "secretsmanager:GetSecretValue"
-      Resource = aws_secretsmanager_secret.defectdojo_lab_token.arn
-    }]
-  })
-}
-
 # The harness reads the commit to check out, so it walks the routes of the code
 # the instance actually runs. Public information, but written by Terraform
 # alone, which is what makes it trusted.
