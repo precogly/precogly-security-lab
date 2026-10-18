@@ -144,10 +144,10 @@ def test_nothing_uploaded_is_an_empty_export_with_a_note() -> None:
     so = record(services=[])
     notes: list[str] = []
 
-    doc = export(so, URL, "t", statuses([]), ["grype-backend"], NOW, note=notes.append)
+    doc = export(so, URL, "t", statuses([]), ["zap-baseline"], NOW, note=notes.append)
 
     assert doc["findings"] == []
-    assert notes == ["no run has uploaded grype-backend yet"]
+    assert notes == ["no run has uploaded zap-baseline yet"]
     assert not query(so, "/api/observations/")
 
 
