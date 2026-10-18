@@ -4,7 +4,8 @@ name        = "trivy-frontend"
 image       = "aquasec/trivy:0.76.0"
 inputs      = ["precogly-images"]
 scans_image = "precogly-frontend"
-# The image's entrypoint is trivy.
-command     = ["image", "--input", "/in/precogly-images/frontend.tar", "--scanners", "vuln", "--format", "cyclonedx", "--output", "/out/report.cdx.json"]
+# The image's entrypoint is trivy. --no-progress: off a terminal its download bar
+# redraws every 200ms with no carriage return, one long line in job.log.
+command     = ["image", "--input", "/in/precogly-images/frontend.tar", "--scanners", "vuln", "--no-progress", "--format", "cyclonedx", "--output", "/out/report.cdx.json"]
 report      = "report.cdx.json"
 timeout     = "30m"
