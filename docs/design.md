@@ -924,13 +924,26 @@ Tailscale SSH and exports with the person's own token, as `lab findings` does.
   Rejected: the laptop installing its own lab on the box for each run, as Ansible
   ships its modules. It removes skew entirely, but the box would run whatever is on
   the laptop, unpushed code included, beside untrusted jobs.
-- **The run is detached and its progress is a file.** The box starts `lab run
-  --events` as the transient systemd unit `lab-run`, so a dropped SSH connection
-  does not stop it, and the run appends one JSON line per change of state to
-  `events.jsonl` in its run directory. The laptop follows that file over SSH and
-  draws it, so attaching again replays the run from its start. Ctrl-C stops the
-  drawing, not the run. Rejected: polling `meta.json`, which needs no format between
-  the two but shows a job only once it ends.
+- **The run is detached and its progress is a file.** The laptop starts `lab run
+  --events FILE` on the box as the transient systemd unit `lab-run`, so a dropped
+  SSH connection does not stop it, and the run appends one JSON line per change of
+  state to that file. The laptop follows the file over SSH and draws it, so
+  attaching again replays the run from its start. Ctrl-C stops the drawing, not the
+  run. Rejected: polling `meta.json`, which needs no format between the two but
+  shows a job only once it ends.
+- **The laptop names the file**, `/var/lib/lab/events/<nonce>.jsonl`, and puts the
+  nonce in the unit's description, which is how `--attach` finds the file of the run
+  in progress. The run ID cannot name it: the box makes that from the commit it
+  reads, after the laptop has had to start following. `tail -F --pid` with the
+  unit's main PID ends the stream when lab exits, so a run that dies without a last
+  event is reported, with its journal (`journalctl -u lab-run`), rather than waited
+  on.
+- **A system unit, run as `ubuntu`** (`sudo systemd-run --uid ubuntu`), so it needs
+  no lingering user session; it gets `ubuntu`'s home and the docker group, checked
+  on the box. Errors before the first job, such as an unknown job name, are an
+  event too, so the laptop shows them rather than a run that never starts.
+- **The login is checked before the run starts**, since the export needs it: a
+  missing token is found before twenty minutes of scanning, not after.
 - **The event stream has its own version.** The first event is
   `{"type": "version", "lab": "<commit>", "events": 1}`, following Terraform's
   machine-readable UI. The laptop refuses an `events` version it does not know and
@@ -947,8 +960,9 @@ Tailscale SSH and exports with the person's own token, as `lab findings` does.
   jobs finished, and for each job a spinner, its elapsed time, and its result.
   Rejected: an estimate from the job's last duration. It would be a guess drawn as
   a measurement, and a job's time moves with the database download and the target.
-- **The export follows the run**, for the jobs that ran, with the active statuses.
-  It happens even when a job failed, and the exit code is non-zero if any did.
+- **The export follows the run** when `-o` names a file, for the jobs that ran, with
+  the active statuses; the export's `jobs` lists them. It happens even when a job
+  failed, and the exit code is non-zero if any did.
   SecObserve is updated by each job's upload as before; the export only reads.
 - **The CLI is Typer.** Options are typed parameters, so mypy checks them, and an
   enum parameter is its own set of choices; rich, which draws the progress, comes
