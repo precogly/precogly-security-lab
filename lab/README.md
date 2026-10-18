@@ -64,11 +64,3 @@ uv run ruff check .    # lint
 uv run ruff format .   # format
 uv run mypy src tests  # type-check (strict)
 ```
-
-On macOS the Tailscale app does not put `tailscale` on `PATH`, which
-`--dry-run` needs. A wrapper on `PATH` does it:
-
-```sh
-printf '#!/bin/sh\nexec /Applications/Tailscale.app/Contents/MacOS/Tailscale "$@"\n' > ~/bin/tailscale
-chmod +x ~/bin/tailscale
-```

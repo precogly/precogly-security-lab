@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from contextlib import ExitStack
@@ -26,12 +27,17 @@ class LiveRunner:
 
     def run(self, command: Command) -> Result:
         env = {**os.environ, **command.env}
+        argv = command.argv
+        if command.search and shutil.which(argv[0]) is None:
+            found = next((p for p in command.search if p.is_file()), None)
+            if found:
+                argv = (str(found), *argv[1:])
         try:
             if command.output is not None:
                 command.output.parent.mkdir(parents=True, exist_ok=True)
                 with command.output.open("ab") as log:
                     done = subprocess.run(
-                        command.argv,
+                        argv,
                         env=env,
                         input=command.stdin.encode() if command.stdin else None,
                         stdout=log,
@@ -42,7 +48,7 @@ class LiveRunner:
                 result = Result(done.returncode, "", "")
             else:
                 captured = subprocess.run(
-                    command.argv,
+                    argv,
                     env=env,
                     input=command.stdin,
                     capture_output=True,
@@ -52,7 +58,9 @@ class LiveRunner:
                 )
                 result = Result(captured.returncode, captured.stdout, captured.stderr)
         except FileNotFoundError:
-            raise CommandError(command, f"{command.argv[0]}: not installed") from None
+            hint = f"; {command.install_hint}" if command.install_hint else ""
+            problem = f"{command.argv[0]}: not installed{hint}"
+            raise CommandError(command, problem) from None
         except subprocess.TimeoutExpired:
             raise CommandTimeout(
                 command, f"timed out after {command.timeout}s"

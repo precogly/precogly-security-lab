@@ -9,16 +9,33 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from pathlib import Path
 
 from lab.command.core import Command, CommandError, CommandRunner, Effect
 
+# Tailscale's Mac App Store app ships its CLI inside the bundle, and Tailscale's
+# instructions put it on the shell with an alias, which a subprocess never sees
+# (tailscale.com/kb/1080).
+_MACOS_APP = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+_INSTALL = "install Tailscale: https://tailscale.com/download"
+
+
+def _tailscale(*args: str) -> Command:
+    return Command(
+        ("tailscale", *args),
+        Effect.READ,
+        timeout=15,
+        search=(_MACOS_APP,),
+        install_hint=_INSTALL,
+    )
+
 
 def status() -> Command:
-    return Command(("tailscale", "status", "--json"), Effect.READ, timeout=15)
+    return _tailscale("status", "--json")
 
 
 def ip4(host: str) -> Command:
-    return Command(("tailscale", "ip", "-4", host), Effect.READ, timeout=15)
+    return _tailscale("ip", "-4", host)
 
 
 def tailnet_suffix(runner: CommandRunner) -> str:

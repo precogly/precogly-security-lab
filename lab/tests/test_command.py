@@ -238,3 +238,22 @@ def test_address_rejects_anything_but_an_ipv4() -> None:
     runner.on("tailscale", "ip", stdout="no such host\n")
     with pytest.raises(CommandError, match="not an IPv4 address"):
         tailscale.address(runner, "pentest")
+
+
+def test_a_program_off_path_is_found_where_it_was_searched_for(tmp_path: Path) -> None:
+    # Tailscale's Mac App Store app is reachable only through a shell alias.
+    program = tmp_path / "Tailscale"
+    program.write_text('#!/bin/sh\necho found "$@"\n')
+    program.chmod(0o755)
+    command = Command(("no-such-program-xyz", "status"), Effect.READ, search=(program,))
+    assert LiveRunner().run(command).stdout == "found status\n"
+
+
+def test_a_missing_program_says_how_to_install_it() -> None:
+    command = Command(
+        ("no-such-program-xyz",),
+        Effect.READ,
+        install_hint="install it: https://example.com/download",
+    )
+    with pytest.raises(CommandError, match="not installed; install it: https"):
+        LiveRunner().run(command)

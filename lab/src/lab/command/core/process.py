@@ -37,6 +37,11 @@ class Command:
     # something downstream reads. A READ with this set is not run in a dry run:
     # it would read state an earlier, skipped WRITE never produced.
     dry_run: Result | None = None
+    # Where else the program may be when `argv[0]` is not on PATH. Only the live
+    # runner looks, so argv stays the same on every machine and in tests.
+    search: tuple[Path, ...] = ()
+    # Added to the error when the program is nowhere: how to install it.
+    install_hint: str = ""
 
     def display(self) -> str:
         env = [
