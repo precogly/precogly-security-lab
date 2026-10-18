@@ -257,3 +257,18 @@ def test_a_missing_program_says_how_to_install_it() -> None:
     )
     with pytest.raises(CommandError, match="not installed; install it: https"):
         LiveRunner().run(command)
+
+
+def test_stream_yields_lines_as_they_come_and_stops_when_closed() -> None:
+    # Prints one line, then would sleep for a minute: a follower that has
+    # what it needs closes the stream, which must kill the command at once.
+    code = "import sys, time; print('first', flush=True); time.sleep(60)"
+    lines = LiveRunner().stream(python(code))
+    assert next(lines) == "first\n"
+    lines.close()
+
+
+def test_stream_raises_on_failure_with_stderr() -> None:
+    code = "import sys; print('out'); sys.stderr.write('lost\\n'); sys.exit(255)"
+    with pytest.raises(CommandError, match=r"exited 255[\s\S]*lost"):
+        list(LiveRunner().stream(python(code)))

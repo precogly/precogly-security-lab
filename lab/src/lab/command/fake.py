@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from urllib.parse import urlsplit
 
 from lab.command.core import (
@@ -30,6 +31,7 @@ class FakeRunner:
         self.requests: list[HttpRequest] = []
         self._results: dict[tuple[str, ...], Result | None] = {}
         self._responses: dict[tuple[str, str], list[HttpResponse]] = {}
+        self._streams: dict[tuple[str, ...], tuple[list[str], int]] = {}
 
     def on(self, *prefix: str, stdout: str = "", returncode: int = 0) -> None:
         self._results[prefix] = Result(returncode, stdout, "")
@@ -37,6 +39,10 @@ class FakeRunner:
     def times_out(self, *prefix: str) -> None:
         """Commands matching `prefix` raise CommandTimeout."""
         self._results[prefix] = None
+
+    def streams(self, *prefix: str, lines: list[str], returncode: int = 0) -> None:
+        """`stream` of a command matching `prefix` yields `lines`, then exits."""
+        self._streams[prefix] = (lines, returncode)
 
     def respond(
         self, method: str, path: str, body: str = "", status: int = 200
@@ -54,6 +60,14 @@ class FakeRunner:
         if command.check and result.returncode != 0:
             raise CommandError(command, f"exited {result.returncode}", result.stderr)
         return result
+
+    def stream(self, command: Command) -> Generator[str]:
+        self.commands.append(command)
+        matches = [p for p in self._streams if command.argv[: len(p)] == p]
+        lines, returncode = self._streams[max(matches, key=len)] if matches else ([], 0)
+        yield from (f"{line}\n" for line in lines)
+        if command.check and returncode != 0:
+            raise CommandError(command, f"exited {returncode}")
 
     def request(self, request: HttpRequest) -> HttpResponse:
         self.requests.append(request)
