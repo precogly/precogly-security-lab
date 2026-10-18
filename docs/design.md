@@ -791,30 +791,64 @@ The model, and why it is shaped this way:
   a chart can mark those, but nothing stops them.
 - Run artifacts live on the scanner box's disk and go when it is replaced. SecObserve
   keeps the findings and the history. Raw reports move to S3 in Phase B.
+- **lab talks to SecObserve with httpx, as effects like any command.** Every side
+  effect in lab goes through one runner, tagged as a read or a write, so `--dry-run`
+  prints every change and tests script every effect in one place. An `HttpRequest`
+  sits beside `Command` for that: the live runner sends it with httpx, the dry-run
+  runner sends reads and prints writes, and the token is a secret header, redacted
+  wherever a request is printed. Rejected: curl, which the first uploads used. It kept
+  lab dependency-free and the token out of argv, but paging JSON through a
+  subprocess's stdout is clumsy and its failures are exit codes. Rejected: an HTTP
+  client injected beside the runner, which would need its own dry-run and fake
+  variants, so "a dry run prints every change" would hold only if both were wired
+  right.
 
 **Getting findings out: `lab findings`.** The core team reads SecObserve, and triage is
 increasingly done with an AI agent, which needs the findings as a file rather than a UI.
 
 ```text
-lab findings -o findings.json            # open findings, every job
+lab findings -o findings.json            # active findings, every job
 lab findings --job semgrep -o sast.json  # one job
+lab findings --status all                # every status but Resolved
+lab findings --status "False positive" --status "Risk accepted"
 ```
 
 - **It reads SecObserve, not raw reports**, so the export is the deduplicated record
   with the team's assessments applied, using the count definition above.
 - **It runs on any machine on the tailnet**, with the person's own SecObserve API token
-  in `SECOBSERVE_TOKEN`. It needs no AWS access, no Docker and no scanners; those stay
-  on the scanner box. `lab run` refuses to run anywhere `/var/lib/lab` does not exist,
-  since only the scanner box's first boot creates it; `--dry-run` works anywhere.
+  in `SECOBSERVE_TOKEN` (User settings, Create API token). It needs no AWS access, no
+  Docker and no scanners; those stay on the scanner box.
 - **The agent never holds a credential.** It reads a file. Pointing it at the API
   instead would hand it a token that can also change assessments.
-- **A small, versioned schema**: id, a link to the observation, job, severity, title,
-  CWE, CVEs, component and version, path and line, the commit scanned, first seen,
-  description. Paths are repository paths, so an agent can open the code at the
-  commit given.
+- **By default it exports the active statuses**: Open, Affected and In review, the
+  ones nobody has decided. That is SecObserve's own `STATUS_ACTIVE` and the default
+  filter on its Observations page, so the file holds what the team sees there, and
+  it follows `gh issue list --state`, which defaults to open. `--status all` adds the
+  triaged statuses, so an agent can second-guess a past decision; it leaves out
+  Resolved, which means the scanner stopped reporting the finding and is not a
+  finding to triage. `--status` also takes exact statuses, repeated.
+  Rejected as the default: everything but Resolved. The file and the page the team
+  reads would disagree, and an agent would spend its time on decided findings.
+- **Flags, no prompt.** The consumer is a script or an agent, neither on a terminal.
+  clig.dev allows a prompt only when stdin is a TTY and never in place of a flag, so
+  a picker could be added later on top of `--status`, not instead of it.
+- **`--job` matches exactly.** SecObserve's `origin_service_name` filter matches a
+  substring, so `--job trivy` would export both Trivy jobs. `lab findings` looks up
+  the job's service by name, checks the name is equal, and filters on its ID.
+- **A small, versioned schema**: id, a link to the observation, job, status, severity,
+  title, CWE, CVEs, component and version, path and line, image, the commit scanned,
+  first seen, description. Paths are repository paths, so an agent can open the code
+  at the commit given.
+- **The commit is known for image findings only.** SecObserve keeps an image's tag,
+  which lab sets to the commit, but has no field for the commit of a code or DAST
+  scan, and putting it in the branch or file name would make every run a new
+  vulnerability check, so nothing would ever resolve. Those findings export with no
+  commit; they are as of the latest run, which scanned the commit in the `precogly_sha`
+  SSM parameter.
 - DefectDojo ignored query filters it did not know, silently, so a misspelt filter
-  exported everything. Whether SecObserve's API does the same is not yet checked; every
-  filter `lab findings` relies on is verified by flipping it before it is relied on.
+  exported everything. django-filter, which SecObserve uses, also ignores unknown
+  query parameters; every filter `lab findings` relies on is verified by flipping it
+  before it is relied on.
 - Not built: writing assessments back. The agent proposes, a person records the
   decision in SecObserve. Applying a decisions file would need write access, so it is
   a separate decision.
@@ -935,7 +969,8 @@ lab run <job>... [--all]       run jobs against the target, then upload each rep
 lab run <job> --check          run the job twice, parse both reports offline, upload nothing
 lab run <job> --dry-run        read the real tailnet, address and commit; print every
                                change a run would make; make none
-lab findings [-o FILE]         export open findings from SecObserve as JSON
+lab findings [-o FILE] [--job JOB] [--status STATUS]...
+                               export active findings from SecObserve as JSON
 ```
 
 - **`--check` is how a job is developed:** run the job as a real run would, parse each

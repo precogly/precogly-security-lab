@@ -1,9 +1,10 @@
-"""External commands, and the runners that execute them.
+"""External effects, and the runners that execute them.
 
-Every command lab runs is a `Command` that says whether it only reads
-(`Effect.READ`) or changes something (`Effect.WRITE`). `DryRunRunner` runs the
-reads and prints the writes, so `--dry-run` sees the real SHA, tailnet and
-addresses without building, running or importing anything.
+Every process lab starts is a `Command`, and every HTTP call an `HttpRequest`;
+each says whether it only reads (`Effect.READ`) or changes something
+(`Effect.WRITE`). `DryRunRunner` performs the reads and prints the writes, so
+`--dry-run` sees the real SHA, tailnet and addresses without building, running
+or uploading anything.
 """
 
 from __future__ import annotations
@@ -13,10 +14,14 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, TextIO
+from urllib.parse import urlencode
+
+import httpx
 
 # Lines of stderr kept in an error message. Arbitrary: enough for a traceback's
 # last frames, short enough to read.
