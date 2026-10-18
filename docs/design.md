@@ -1360,6 +1360,18 @@ they did not — the same discipline the AppSec plan holds itself to.
 
 ## Log
 
+- **2026-10-18 (Schemathesis implementation review)** — The D13 per-job Compose
+  stack, Schemathesis run, SARIF conversion and SecObserve upload ran end to end
+  on the scanner box. The backend log showed no fuzzing below `/api/auth/` beyond
+  login, and teardown left no job containers, volumes or networks. The run did
+  not reach the milestone: the ownership oracle does not yet learn integer IDs
+  or foreign-key IDs, conflates resource types, and treats an unknown peer 2xx
+  as a violation. The next iteration keeps Schemathesis for broad exploration
+  but adds deterministic fixtures and probes for #226, #227 and #405, typed
+  ownership, delayed list evaluation and unit tests. A second identical run and
+  `lab run --all` remain acceptance work; no stability or regression claim is
+  made yet.
+
 - **2026-10-18 (Schemathesis)** — D13 rewritten: the harness is Schemathesis fuzzing a
   throwaway Precogly, with a check of the lab's, instead of a route walk and a
   replayer. The schema the first D13 rejected turned out served at `/api/schema/`,

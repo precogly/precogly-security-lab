@@ -168,6 +168,10 @@ From outside the tailnet, every box's public address is closed on every port.
 
 ## 5. Install `lab` on the scanner box
 
+The Schemathesis job requires Docker Compose v2. New scanner boxes install it
+from user data. The existing box predates that change, so replace it or install
+`docker-compose-v2` by hand before running the job.
+
 `lab` is installed at an exact commit of this repository, so the box runs code
 you can name. The box's first boot already installed uv, at the version
 `lab/pyproject.toml` requires, and created `/var/lib/lab`. Over
