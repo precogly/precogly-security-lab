@@ -55,8 +55,9 @@ an auth key per box, then the checks.
 | Network, Precogly, scanner box, SecObserve | running, with isolation checked |
 | SecObserve backups and restore | nightly dump to S3; restore not yet tested |
 | `lab` CLI | `lab jobs`, `lab run`, `--dry-run`; runs reaching SecObserve |
-| Jobs | `semgrep`, `trivy-backend`, `trivy-frontend`, `zap-baseline`; the harness next |
-| `lab findings` (export for agent triage) | designed, not built |
+| Jobs | `semgrep`, `trivy-*`, `grype-*`, `zap-baseline`; the harness next |
+| `lab auth`, `lab findings` (export for agent triage) | built; checked against the live record |
+| `lab run --remote` | designed, not built |
 | `lab run --check` | designed, not built |
 | Cross-tenant harness | route walk built; replayer not yet written |
 | Fargate scan jobs, orchestration | later phases, not started |

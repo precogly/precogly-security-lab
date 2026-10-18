@@ -9,6 +9,9 @@ lab jobs                    list jobs; fail on any that do not load
 lab run <job>... | --all    run jobs, then upload each report
 lab run <job> --dry-run     read the real tailnet, address and commit; print every
                             change a run would make; make none
+lab auth login|status|logout
+                            mint, show, or revoke this machine's SecObserve token
+lab findings [-o FILE]      export active findings as JSON; --job, --status
 ```
 
 A run's files land in `/var/lib/lab/runs/<run-id>/<job>/`: the report, the
@@ -49,6 +52,8 @@ src/lab/
   inputs.py      Precogly's source and images, for jobs that scan them
   run.py         one run: jobs, report checks, uploads, meta.json
   sarif.py       rewrites SARIF paths to repository paths before upload
+  auth.py        lab auth: this machine's SecObserve token, in the system keyring
+  findings.py    lab findings: the record, exported in a versioned schema
   command/       every external effect, a process or an HTTP request, as a READ
                  or a WRITE; --dry-run performs the reads and prints the writes
     core/        the effect types and the runners that perform them

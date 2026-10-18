@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import shutil
 from pathlib import Path
 
 from lab.command.core import Command, CommandError, CommandRunner, Effect
@@ -28,6 +29,14 @@ def _tailscale(*args: str) -> Command:
         search=(_MACOS_APP,),
         install_hint=_INSTALL,
     )
+
+
+def location() -> Path | None:
+    """Where the live runner will find tailscale, as `lab auth status` shows it."""
+    on_path = shutil.which("tailscale")
+    if on_path:
+        return Path(on_path)
+    return _MACOS_APP if _MACOS_APP.is_file() else None
 
 
 def status() -> Command:
