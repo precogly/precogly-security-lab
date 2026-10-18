@@ -26,7 +26,8 @@ TS_TAG="${tailscale_tag}"
 # shellcheck disable=SC2154
 FQDN="${tailscale_hostname}.${tailnet_domain}"
 # shellcheck disable=SC2154
-VERSION="${secobserve_version}"
+# Not VERSION: sourcing /etc/os-release below sets that to Ubuntu's.
+SECOBSERVE_VERSION="${secobserve_version}"
 
 APP=/opt/secobserve
 export DEBIAN_FRONTEND=noninteractive
@@ -111,7 +112,7 @@ DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 ADMIN_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
 install -m 600 /dev/null .env
 cat > .env <<ENV
-VERSION=$VERSION
+SECOBSERVE_VERSION=$SECOBSERVE_VERSION
 DATABASE_PASSWORD=$DB_PASSWORD
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 DJANGO_SECRET_KEY=$(jq -r .django_secret_key <<<"$KEYS")
@@ -134,7 +135,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
   backend:
-    image: ghcr.io/secobserve/secobserve-backend:$${VERSION}
+    image: ghcr.io/secobserve/secobserve-backend:$${SECOBSERVE_VERSION}
     depends_on: [postgres]
     environment:
       ADMIN_USER: admin
@@ -154,7 +155,7 @@ services:
     ports:
       - "127.0.0.1:5000:5000"
   frontend:
-    image: ghcr.io/secobserve/secobserve-frontend:$${VERSION}
+    image: ghcr.io/secobserve/secobserve-frontend:$${SECOBSERVE_VERSION}
     environment:
       API_BASE_URL: https://$${FQDN}/api
       OIDC_ENABLE: "false"
