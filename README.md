@@ -1,7 +1,7 @@
 # precogly-security-lab
 
 Precogly's security lab: a Precogly deployment for scanners and pentest agents to
-attack, with findings recorded in DefectDojo.
+attack, with findings recorded in SecObserve.
 
 It runs on AWS, reachable only over Tailscale. It is not a hosting offering
 ([#66][66]).
@@ -14,10 +14,10 @@ It runs on AWS, reachable only over Tailscale. It is not a hosting offering
   scanner box ─────┘                                 :443          deploys it; reaches nothing
        │
        │  scanners and agents run here; `lab` runs each one and
-       │  reimports its report
+       │  uploads its report
        ▼
-  defectdojo   the findings record: one Test per scan job, reimported
-  :443         every run, so its history shows findings over time;
+  secobserve   the findings record: one vulnerability check per scan job,
+  :443         uploaded every run, so its history shows findings over time;
                backed up nightly to S3
 ```
 
@@ -27,8 +27,8 @@ It runs on AWS, reachable only over Tailscale. It is not a hosting offering
 - **scanner** is where every scanner and AI pentest agent runs, on its own box so
   that untrusted code stays off teammates' laptops. People reach it over Tailscale
   SSH.
-- **defectdojo** is [DefectDojo][dd], self-hosted. The lab keeps no findings of its
-  own.
+- **secobserve** is [SecObserve][so], self-hosted. Filter findings by scanner or by
+  job (its Service). The lab keeps no findings of its own.
 
 Every scan runs through one command, `lab`, so adding a scanner is one definition
 file, not another script. See [`lab/README.md`](lab/README.md).
@@ -52,23 +52,24 @@ an auth key per box, then the checks.
 
 | | |
 |---|---|
-| Network, Precogly, scanner box, DefectDojo | running, with isolation checked |
-| DefectDojo backups and restore | nightly dump to S3; restore tested once |
-| `lab` CLI | `lab jobs`, `lab run`, `--dry-run` built and tested; first real run pending |
-| Jobs | `zap-baseline`; the harness next |
+| Network, Precogly, scanner box, SecObserve | running, with isolation checked |
+| SecObserve backups and restore | nightly dump to S3; restore not yet tested |
+| `lab` CLI | `lab jobs`, `lab run`, `--dry-run`; runs reaching SecObserve |
+| Jobs | `semgrep`, `trivy-backend`, `trivy-frontend`, `zap-baseline`; the harness next |
+| `lab findings` (export for agent triage) | designed, not built |
 | `lab run --check` | designed, not built |
 | Cross-tenant harness | route walk built; replayer not yet written |
 | Fargate scan jobs, orchestration | later phases, not started |
 
 First milestone: the harness finds [#226][226], [#227][227] or [#405][405], open
-Precogly authorization bugs, as a DefectDojo finding.
+Precogly authorization bugs, as a SecObserve finding.
 
 ## Design
 
 Read [`docs/design.md`](docs/design.md) before adding anything. Two anti-goals:
 
-- **Do not reinvent DefectDojo.** A findings database, cross-tool dedup or a triage
-  UI is solved upstream.
+- **Do not reinvent the findings store.** A findings database, cross-tool dedup or a
+  triage UI is solved upstream.
 - **Do not let the AI layer become the project.** An autonomous pentest agent is one
   more sandboxed job; the isolation around it is the work.
 
@@ -77,4 +78,4 @@ Read [`docs/design.md`](docs/design.md) before adding anything. Two anti-goals:
 [227]: https://github.com/precogly/precogly/issues/227
 [405]: https://github.com/precogly/precogly/issues/405
 [guide]: https://github.com/precogly/precogly/blob/ac22b875c5542a9be1db73f53373f0fa5eac22cc/docs/guides/self-hosting-aws.md
-[dd]: https://github.com/DefectDojo/django-DefectDojo
+[so]: https://github.com/SecObserve/SecObserve

@@ -48,7 +48,7 @@ every laptop. Keep any rules of your own unrelated to the lab.
   "tagOwners": {
     "tag:precogly":   ["autogroup:admin"],
     "tag:scanner":    ["autogroup:admin"],
-    "tag:defectdojo": ["autogroup:admin"],
+    "tag:secobserve": ["autogroup:admin"],
   },
 
   "grants": [
@@ -56,11 +56,11 @@ every laptop. Keep any rules of your own unrelated to the lab.
     {"src": ["teammate-one@example.com"], "dst": ["tag:precogly"],   "ip": ["tcp:443"]},
     // People reach the scanner box over Tailscale SSH (the ssh rule below too).
     {"src": ["teammate-one@example.com"], "dst": ["tag:scanner"],    "ip": ["tcp:22"]},
-    // People reach DefectDojo's UI.
-    {"src": ["teammate-one@example.com"], "dst": ["tag:defectdojo"], "ip": ["tcp:443"]},
-    // Scanners reach Precogly, and `lab` reaches DefectDojo's API. Nothing else.
-    {"src": ["tag:scanner"], "dst": ["tag:precogly", "tag:defectdojo"], "ip": ["tcp:443"]},
-    // tag:precogly and tag:defectdojo are never a source: neither reaches anything.
+    // People reach SecObserve's UI.
+    {"src": ["teammate-one@example.com"], "dst": ["tag:secobserve"], "ip": ["tcp:443"]},
+    // Scanners reach Precogly, and `lab` uploads to SecObserve. Nothing else.
+    {"src": ["tag:scanner"], "dst": ["tag:precogly", "tag:secobserve"], "ip": ["tcp:443"]},
+    // tag:precogly and tag:secobserve are never a source: neither reaches anything.
   ],
 
   "ssh": [
@@ -84,7 +84,7 @@ terraform apply lab.tfplan
 ```
 
 The apply creates the network, the three boxes, an empty auth-key secret per box
-and DefectDojo's backup bucket. Each box boots and waits for its key.
+and SecObserve's backup bucket. Each box boots and waits for its key.
 
 Check every plan for `aws_instance.*` replacements. Two things cause one with no
 change of your own:
@@ -94,8 +94,8 @@ change of your own:
 - **An edit to a `*-user-data.sh.tftpl` file, comments included.** The rendered
   script is the box's user data.
 
-Replacing the DefectDojo box restores its newest nightly dump. Take a fresh one
-first: `sudo systemctl start defectdojo-backup` on the box.
+Replacing the SecObserve box restores its newest nightly dump. Take a fresh one
+first: `sudo systemctl start secobserve-backup` on the box.
 
 ## 3. Auth keys
 
@@ -116,14 +116,14 @@ under the wrong tag.
 |---|---|---|
 | Precogly | `tag:precogly` | `precogly-seclab/precogly-authkey` |
 | Scanner | `tag:scanner` | `precogly-seclab/scanner-authkey` |
-| DefectDojo | `tag:defectdojo` | `precogly-seclab/defectdojo-authkey` |
+| SecObserve | `tag:secobserve` | `precogly-seclab/secobserve-authkey` |
 
 ```sh
 aws secretsmanager put-secret-value --secret-id precogly-seclab/precogly-authkey --secret-string 'tskey-auth-...'
 ```
 
 Each box waits up to an hour for a value starting `tskey-auth-`, joins, and
-overwrites its secret with `spent`. Precogly and DefectDojo then take several
+overwrites its secret with `spent`. Precogly and SecObserve then take several
 minutes more to build and start. To watch a boot:
 
 ```sh
@@ -132,7 +132,7 @@ sudo tail -f /var/log/cloud-init-output.log
 ```
 
 A box that finishes prints `Precogly is up at …`, `scanner box is up at …` or
-`DefectDojo is up at …` as its last line.
+`SecObserve is up at …` as its last line.
 
 **Replacing a box:** remove its old node on the **Machines** page first. Otherwise
 the new one joins as `<name>-1`, and its boot stops itself rather than run under
@@ -145,7 +145,7 @@ From your machine:
 
 ```sh
 curl -sS -o /dev/null -w '%{http_code}\n' https://pentest.<tailnet>.ts.net/            # 200
-curl -sS -o /dev/null -w '%{http_code}\n' https://defectdojo.<tailnet>.ts.net/login    # 200
+curl -sS -o /dev/null -w '%{http_code}\n' https://secobserve.<tailnet>.ts.net/          # 200
 ssh ubuntu@scanner true && echo ok                                                     # no key needed
 ```
 
@@ -156,7 +156,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://pentest.<tailnet>.ts.net/     
 tailscale ip -4                                                                        # note it
 ```
 
-From the instance and from DefectDojo, over SSM, the scanner's port 22 must not
+From the instance and from SecObserve, over SSM, the scanner's port 22 must not
 answer: proof the default policy is gone. Use the scanner's address, since neither
 box resolves tailnet names; `tailscale ping` tests the path, not the policy.
 
@@ -188,12 +188,12 @@ lab run zap-baseline --dry-run    # reads real values, changes nothing
 | | |
 |---|---|
 | Precogly | `https://pentest.<tailnet>.ts.net`, as `admin@precogly.dev` / `admin123` (or `analyst@`, `contoso@`) |
-| DefectDojo | `https://defectdojo.<tailnet>.ts.net`, as `admin`, password below |
+| SecObserve | `https://secobserve.<tailnet>.ts.net`, as `admin`, password below. Filter by **Scanner** or by **Service** (one per job) |
 | Scanner box | `ssh ubuntu@scanner` |
 | Any box | `aws ssm start-session --target <instance id>` (`terraform output` lists them) |
 
 ```sh
-aws secretsmanager get-secret-value --secret-id precogly-seclab/defectdojo-admin \
+aws secretsmanager get-secret-value --secret-id precogly-seclab/secobserve-admin \
   --query SecretString --output text
 ```
 
@@ -201,16 +201,16 @@ The boxes bill while running. Stop them when idle:
 
 ```sh
 aws ec2 stop-instances --instance-ids $(terraform -chdir=terraform output -json \
-  | jq -r '[.precogly_instance_id, .scanner_instance_id, .defectdojo_instance_id] | map(.value) | join(" ")')
+  | jq -r '[.precogly_instance_id, .scanner_instance_id, .secobserve_instance_id] | map(.value) | join(" ")')
 ```
 
-Neither Precogly nor DefectDojo starts again by itself after a stop: their compose
-files, copied from upstream, have no restart policy. After starting the boxes, over
+Neither Precogly nor SecObserve starts again by itself after a stop: their compose
+files have no restart policy. After starting the boxes, over
 SSM:
 
 ```sh
 # Precogly
 cd /home/ubuntu/precogly && sudo -u ubuntu docker compose -f docker-compose.workshop.yml up -d
-# DefectDojo
-cd /opt/defectdojo && sudo docker compose up -d
+# SecObserve
+cd /opt/secobserve && sudo docker compose up -d
 ```

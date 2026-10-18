@@ -1,19 +1,19 @@
 # lab
 
 The one way scans run in the lab: `lab run` starts a scan job against the
-Precogly instance, then reimports its report into DefectDojo. It runs on the
+Precogly instance, then uploads its report to SecObserve. It runs on the
 scanner box.
 
 ```text
 lab jobs                    list jobs; fail on any that do not load
-lab run <job>... | --all    run jobs, then reimport each report
+lab run <job>... | --all    run jobs, then upload each report
 lab run <job> --dry-run     read the real tailnet, address and commit; print every
                             change a run would make; make none
 ```
 
 A run's files land in `/var/lib/lab/runs/<run-id>/<job>/`: the report, the
-container's `job.log`, and `meta.json` with the status, exit code and DefectDojo
-Test id.
+container's `job.log`, and `meta.json` with the status, exit code, and how many
+findings SecObserve counted as new, updated and resolved.
 
 ## Adding a job
 
@@ -24,17 +24,19 @@ reasoning behind it, is in [`docs/design.md`](../docs/design.md), D14.
 name      = "zap-baseline"                     # must match the file name
 image     = "ghcr.io/zaproxy/zaproxy:2.17.0"   # a pinned tag or digest
 out_mount = "/zap/wrk"                         # optional; default /out
-command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "report.xml"]
-report    = "report.xml"                       # relative to out_mount
-scan_type = "ZAP Scan"                         # a lab.job.ScanType value
+command   = ["zap-baseline.py", "-t", "{target_url}", "-J", "report.json"]
+report    = "report.json"                      # relative to out_mount
 timeout   = "30m"                              # optional; default 1h
 # inputs  = ["precogly-images"]                # built from Precogly at the run's commit
 # assets  = "harness"                          # lab/src/lab/<name>, mounted at /job
 # secrets = ["anthropic-api-key"]              # from precogly-seclab/jobs/ in Secrets Manager
+# scans_image = "precogly-backend"             # labels image findings with the commit
 ```
 
-Check it loads with `lab jobs`, and see exactly what it would run with
-`lab run <job> --dry-run`.
+The report must be in a format SecObserve parses, which it detects from the file:
+SARIF for code findings, CycloneDX for image findings (SARIF loses which package),
+or a format with its own parser such as ZAP's JSON. Check the job loads with
+`lab jobs`, and see exactly what it would run with `lab run <job> --dry-run`.
 
 ## How it is built
 
@@ -45,7 +47,8 @@ src/lab/
   target.py      the target definition (targets/pentest.toml)
   container.py   the `docker run` every job gets
   inputs.py      Precogly's source and images, for jobs that scan them
-  run.py         one run: jobs, report checks, reimports, meta.json
+  run.py         one run: jobs, report checks, uploads, meta.json
+  sarif.py       rewrites SARIF paths to repository paths before upload
   command/       every external command, as a READ or a WRITE, and the runners
                  that execute them; --dry-run runs the reads and prints the writes
   harness/       the cross-tenant harness
