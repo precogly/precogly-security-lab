@@ -1,0 +1,10 @@
+# Grype: known vulnerabilities in Precogly's backend image, as built at the run's commit.
+# A second image scanner beside Trivy, so their findings can be compared per tool.
+name        = "grype-backend"
+image       = "anchore/grype:v0.120.1"
+inputs      = ["precogly-images"]
+scans_image = "precogly-backend"
+# The image's entrypoint is grype.
+command     = ["docker-archive:/in/precogly-images/backend.tar", "-o", "cyclonedx-json=/out/report.cdx.json"]
+report      = "report.cdx.json"
+timeout     = "30m"
