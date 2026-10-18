@@ -206,3 +206,27 @@ def test_sarif_is_uploaded_with_repository_paths(tmp_path: Path) -> None:
     [upload] = box.requests
     assert upload.file is not None
     assert upload.file[1].name == "upload.sarif"
+
+
+def test_a_run_reports_each_job_as_it_starts_and_ends(tmp_path: Path) -> None:
+    # The events a follower draws; the version event is the writer's, not the
+    # run's, so it is not here.
+    box = real_box()
+    events: list[dict[str, object]] = []
+    first, second = replace(ZAP, name="first"), replace(ZAP, name="second")
+    execute(
+        [first, second], TARGET, box, now=NOW, root=tmp_path, on_event=events.append
+    )
+
+    kinds = [(e["type"], e.get("job")) for e in events]
+    assert kinds == [
+        ("run", None),
+        ("job_started", "first"),
+        ("job_finished", "first"),
+        ("job_started", "second"),
+        ("job_finished", "second"),
+        ("run_finished", None),
+    ]
+    assert events[0]["jobs"] == ["first", "second"]
+    assert events[2]["observations"] == {"new": 13, "updated": 0, "resolved": 0}
+    assert events[-1]["ok"] is True

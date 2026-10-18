@@ -183,7 +183,7 @@ lab run zap-baseline --dry-run    # reads real values, changes nothing
 `lab` and `uv` are linked into `/usr/local/bin`, so one-shot commands work too:
 `ssh ubuntu@scanner lab run zap-baseline`.
 
-## 6. Export findings from your laptop
+## 6. Scan and export from your laptop
 
 `lab findings` reads SecObserve with your own token, which `lab auth login` mints
 from your SecObserve password and keeps in the system keyring for 90 days. Install
@@ -197,6 +197,18 @@ lab findings --job semgrep --status all -o sast.json
 ```
 
 On a machine with no keyring, such as CI, set `SECOBSERVE_TOKEN` instead.
+
+To scan and export in one step, run the jobs on the scanner box from your laptop:
+
+```sh
+lab run --all --remote -o findings.json   # runs on the box, then exports
+lab run --remote --attach                 # follow a run in progress
+```
+
+The run is a systemd unit on the box, so Ctrl-C or a dropped connection stops only
+the display; attach again to pick it up. One run goes at a time, and a second
+`--remote` says whose run is going and since when. The box runs the jobs of the
+`lab` installed there, so install the same commit on both (step 5).
 
 ## Using it
 

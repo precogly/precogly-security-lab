@@ -3,9 +3,12 @@ their findings."""
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
+import socket
 import sys
+import uuid
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -14,8 +17,9 @@ from typing import Annotated
 import keyring
 import typer
 from keyring.errors import KeyringError
+from rich.console import Console
 
-from lab import auth, findings
+from lab import auth, findings, remote
 from lab.auth import AuthError
 from lab.command import (
     CommandError,
@@ -26,8 +30,11 @@ from lab.command import (
     secobserve,
     tailscale,
 )
+from lab.events import VERSION, EventLog, event, lab_commit
 from lab.findings import FindingsError, StatusChoice
 from lab.job import Job, JobError, load_jobs
+from lab.progress import Display
+from lab.remote import RemoteError
 from lab.run import SECOBSERVE_HOST, Status, execute
 from lab.target import TargetError, load_target
 
@@ -84,14 +91,60 @@ def run(
             "make none.",
         ),
     ] = False,
+    remote_run: Annotated[
+        bool,
+        typer.Option(
+            "--remote", help="Run on the scanner box from here, and follow it."
+        ),
+    ] = False,
+    attach: Annotated[
+        bool,
+        typer.Option("--attach", help="Follow the scanner box's run in progress."),
+    ] = False,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="With --remote: export the findings here after."
+        ),
+    ] = None,
+    events_to: Annotated[
+        Path | None,
+        typer.Option("--events", help="Append the run's events to this file."),
+    ] = None,
 ) -> None:
     """Run jobs, then upload each report to SecObserve."""
-    selected = _select(load_jobs(_definitions("jobs")), names or [], everything)
-    target = load_target(_definitions("targets") / f"{TARGET}.toml")
-    runner: CommandRunner = LiveRunner()
-    if dry_run:
-        runner = DryRunRunner(runner)
-    rid, outcomes = execute(selected, target, runner, now=datetime.now(UTC))
+    if remote_run or attach:
+        if dry_run:
+            raise JobError(
+                f"--dry-run runs on the scanner box: ssh {remote.SCANNER} "
+                "lab run <job>... --dry-run"
+            )
+        _remote(names or [], everything, attach, output)
+        return
+    if output:
+        raise JobError("-o exports after a --remote run; use `lab findings -o`")
+
+    now = datetime.now(UTC)
+    log = EventLog(events_to) if events_to else None
+    if log:
+        log(event("version", now, events=VERSION, lab=lab_commit()))
+    try:
+        selected = _select(load_jobs(_definitions("jobs")), names or [], everything)
+        target = load_target(_definitions("targets") / f"{TARGET}.toml")
+        runner: CommandRunner = LiveRunner()
+        if dry_run:
+            runner = DryRunRunner(runner)
+        rid, outcomes = execute(
+            selected, target, runner, now=now, on_event=log or (lambda _: None)
+        )
+    except Exception as err:
+        # A follower would otherwise wait for jobs that will never start.
+        if log:
+            log(event("failed", datetime.now(UTC), error=str(err)))
+        raise
+    finally:
+        if log:
+            log.close()
     if dry_run:
         # The outcomes are what the dry run assumed, not results.
         print(f"dry run {rid}: nothing was changed")
@@ -104,6 +157,83 @@ def run(
             print(f"  {outcome.error}", file=sys.stderr)
     print(f"run {rid}")
     if not all(o.status is Status.OK for o in outcomes):
+        raise typer.Exit(1)
+
+
+def _remote(
+    names: list[str], everything: bool, attach: bool, output: Path | None
+) -> None:
+    """Start a run on the scanner box, or attach to one; follow it; then export."""
+    runner = LiveRunner()
+    local = load_jobs(_definitions("jobs"))
+    url = _secobserve_url(runner)
+    now = datetime.now(UTC)
+    # Checked first: a missing login found after the run would waste it.
+    token = auth.token(keyring, url, os.environ, now.date()) if output else None
+
+    running = remote.unit(runner)
+    if attach:
+        if names or everything:
+            raise JobError("--attach follows the run in progress; it takes no jobs")
+        if not running.active or running.nonce is None:
+            raise RemoteError("no run is in progress on the scanner box")
+    else:
+        if everything == bool(names):
+            raise JobError("name the jobs to run, or pass --all, not both")
+        if running.active:
+            raise remote.busy(running)
+        # The box decides what runs; a name only this lab lacks is the box's to
+        # judge, so it is a warning.
+        if unknown := [n for n in names if n not in local]:
+            print(
+                f"lab: this lab has no job {unknown}; the box decides", file=sys.stderr
+            )
+        nonce = uuid.uuid4().hex[:12]
+        who = f"{getpass.getuser()}@{socket.gethostname().split('.')[0]}"
+        running = remote.start(runner, nonce, who, ["--all"] if everything else names)
+    assert running.nonce is not None, "start and attach both name the events file"
+
+    display = Display(Console(stderr=True))
+    ran: list[str] = []
+    ok = False
+    try:
+        for item in remote.follow(runner, running.nonce, running.main_pid):
+            display.handle(item)
+            if item["type"] == "run":
+                ran = list(item.get("jobs") or [])
+                if everything and set(ran) != set(local):
+                    print(
+                        "lab: the box's jobs differ from this lab's: "
+                        f"{sorted(set(ran) ^ set(local))}",
+                        file=sys.stderr,
+                    )
+            elif item["type"] == "run_finished":
+                ok = bool(item.get("ok"))
+            elif item["type"] == "failed":
+                raise RemoteError(f"the run failed: {item.get('error')}")
+    except KeyboardInterrupt:
+        display.close()
+        print(
+            f"lab: detached; the run continues. attach with: {remote.ATTACH}",
+            file=sys.stderr,
+        )
+        raise typer.Exit(130) from None
+    finally:
+        display.close()
+
+    if output and token and ran:
+        doc = findings.export(
+            runner,
+            url,
+            token,
+            findings.statuses([]),
+            ran,
+            datetime.now(UTC),
+            note=lambda text: print(f"lab: {text}", file=sys.stderr),
+        )
+        output.write_text(json.dumps(doc, indent=2) + "\n")
+        print(f"{len(doc['findings'])} findings to {output}", file=sys.stderr)
+    if not ok:
         raise typer.Exit(1)
 
 
@@ -135,7 +265,7 @@ def export_findings(
         url,
         auth.token(keyring, url, os.environ, now.date()),
         findings.statuses(status or []),
-        job,
+        [job] if job else None,
         now,
         note=lambda text: print(f"lab: {text}", file=sys.stderr),
     )
@@ -242,7 +372,14 @@ def main(argv: list[str] | None = None) -> int:
     except HttpError as err:
         print(f"lab: {auth.rejected(err) or err}", file=sys.stderr)
         return 1
-    except (JobError, TargetError, CommandError, FindingsError, AuthError) as err:
+    except (
+        JobError,
+        TargetError,
+        CommandError,
+        FindingsError,
+        AuthError,
+        RemoteError,
+    ) as err:
         print(f"lab: {err}", file=sys.stderr)
         return 1
     return 0

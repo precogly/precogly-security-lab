@@ -23,6 +23,7 @@ from lab.command import (
     tailscale,
 )
 from lab.container import Run, built_image_ref, container_name, run_args
+from lab.events import Event, event
 from lab.job import Job
 from lab.target import Target
 
@@ -90,18 +91,21 @@ def execute(
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     root: Path = ROOT,
     region: str = REGION,
+    on_event: Callable[[Event], None] = lambda _: None,
 ) -> tuple[str, list[Outcome]]:
     """Run each job, then upload each report that exists. Returns the run ID
     and one outcome per job.
 
     Through DryRunRunner this prints every change it would make, having read
-    the real tailnet, target address and SHA.
+    the real tailnet, target address and SHA. `on_event` is told of the run
+    and of each job as it starts and ends; see `lab.events`.
     """
     tailnet = tailscale.tailnet_suffix(runner)
     host = target.host(tailnet)
     address = tailscale.address(runner, host)
     sha = aws.precogly_sha(runner, region)
     rid = run_id(now, sha)
+    on_event(event("run", clock(), run=rid, precogly=sha, jobs=[j.name for j in jobs]))
 
     run_dir = root / "runs" / rid
     runner.run(fs.mkdir(run_dir))
@@ -129,6 +133,7 @@ def execute(
             assets_dir=assets_dir(job),
         )
         started = clock()
+        on_event(event("job_started", started, job=job.name))
         # Read even on a dry run: it proves each secret exists and is readable,
         # and the value stays in memory, redacted wherever it would be shown.
         secrets = {
@@ -199,6 +204,18 @@ def execute(
         meta = json.dumps(asdict(outcome), indent=2) + "\n"
         runner.run(fs.write_text(out_dir / "meta.json", meta))
         outcomes.append(outcome)
+        on_event(
+            event(
+                "job_finished",
+                clock(),
+                job=job.name,
+                status=str(status),
+                observations=asdict(counts) if counts else None,
+                error=error,
+            )
+        )
+    ok = all(o.status is Status.OK for o in outcomes)
+    on_event(event("run_finished", clock(), run=rid, ok=ok))
     return rid, outcomes
 
 

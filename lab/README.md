@@ -9,6 +9,8 @@ lab jobs                    list jobs; fail on any that do not load
 lab run <job>... | --all    run jobs, then upload each report
 lab run <job> --dry-run     read the real tailnet, address and commit; print every
                             change a run would make; make none
+lab run --all --remote -o F  from a laptop: run on the scanner box, follow, export
+lab run --remote --attach   follow the scanner box's run in progress
 lab auth login|status|logout
                             mint, show, or revoke this machine's SecObserve token
 lab findings [-o FILE]      export active findings as JSON; --job, --status
@@ -54,6 +56,9 @@ src/lab/
   sarif.py       rewrites SARIF paths to repository paths before upload
   auth.py        lab auth: this machine's SecObserve token, in the system keyring
   findings.py    lab findings: the record, exported in a versioned schema
+  events.py      the events a run writes as it goes, versioned
+  remote.py      lab run --remote: the lab-run unit on the box, and following it
+  progress.py    drawing a run's events, live on a terminal
   command/       every external effect, a process or an HTTP request, as a READ
                  or a WRITE; --dry-run performs the reads and prints the writes
     core/        the effect types and the runners that perform them

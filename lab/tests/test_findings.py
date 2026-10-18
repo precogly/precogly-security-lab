@@ -101,7 +101,7 @@ def test_ids_are_taken_by_exact_name_and_every_page_is_read() -> None:
         ]
     )
 
-    doc = export(so, URL, "t", statuses([]), "semgrep", NOW, note=print)
+    doc = export(so, URL, "t", statuses([]), ["semgrep"], NOW, note=print)
 
     [first, second] = query(so, "/api/observations/")
     assert ("product", "1") in first
@@ -144,7 +144,7 @@ def test_nothing_uploaded_is_an_empty_export_with_a_note() -> None:
     so = record(services=[])
     notes: list[str] = []
 
-    doc = export(so, URL, "t", statuses([]), "grype-backend", NOW, note=notes.append)
+    doc = export(so, URL, "t", statuses([]), ["grype-backend"], NOW, note=notes.append)
 
     assert doc["findings"] == []
     assert notes == ["no run has uploaded grype-backend yet"]

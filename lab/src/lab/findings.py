@@ -98,11 +98,11 @@ def export(
     url: str,
     token: str,
     wanted: Sequence[FindingStatus],
-    job: str | None,
+    jobs: Sequence[str] | None,
     now: datetime,
     note: Callable[[str], None],
 ) -> dict[str, Any]:
-    """Read the findings in `wanted` statuses, of one job or every job.
+    """Read the findings in `wanted` statuses, of the jobs named or of every job.
 
     `note` is told when there is nothing to read because nothing has been
     uploaded yet, which exports as no findings.
@@ -116,7 +116,7 @@ def export(
         "exported": now.isoformat(),
         "source": url,
         "statuses": [s.value for s in wanted],
-        "job": job,
+        "jobs": list(jobs) if jobs is not None else None,
         "findings": [],
     }
     products = get("/api/products/", [("name", api.PRODUCT)])
@@ -133,15 +133,32 @@ def export(
         return doc
     query = [("product", str(product)), ("branch", str(branch))]
     query += [("current_status", s.value) for s in wanted]
-    if job:
+    query += [("ordering", "id"), ("page_size", str(PAGE_SIZE))]
+
+    # The service filter takes one ID, so several jobs are one read each.
+    scopes: list[list[tuple[str, str]]] = []
+    for job in jobs if jobs is not None else []:
         services = get("/api/services/", [("product", str(product)), ("name", job)])
         service = _lookup(services, job, "service")
         if service is None:
             note(f"no run has uploaded {job} yet")
-            return doc
-        query.append(("origin_service", str(service)))
-    query += [("ordering", "id"), ("page_size", str(PAGE_SIZE))]
+        else:
+            scopes.append([("origin_service", str(service))])
+    if jobs is None:
+        scopes = [[]]
 
+    observations: list[dict[str, Any]] = []
+    for scope in scopes:
+        observations += _read_all(get, [*query, *scope])
+    doc["findings"] = [_finding(url, o) for o in observations]
+    return doc
+
+
+def _read_all(
+    get: Callable[[str, Sequence[tuple[str, str]]], Any],
+    query: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Every page of one observation query."""
     observations: list[dict[str, Any]] = []
     page = 1
     while True:
@@ -155,8 +172,7 @@ def export(
             f"read {len(observations)} findings of {found['count']}: the record "
             "changed during the export; run it again"
         )
-    doc["findings"] = [_finding(url, o) for o in observations]
-    return doc
+    return observations
 
 
 def _finding(url: str, o: dict[str, Any]) -> dict[str, Any]:
