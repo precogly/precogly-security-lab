@@ -207,6 +207,7 @@ To scan and export in one step, run the jobs on the scanner box from your laptop
 ```sh
 lab run --all --remote -o findings.json   # runs on the box, then exports
 lab run --remote --attach                 # follow a run in progress
+lab run --remote --stop                   # stop it; the job running then is not uploaded
 ```
 
 The run is a systemd unit on the box, so Ctrl-C or a dropped connection stops only

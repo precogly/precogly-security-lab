@@ -11,6 +11,7 @@ lab run <job> --dry-run     read the real tailnet, address and commit; print eve
                             change a run would make; make none
 lab run --all --remote -o F  from a laptop: run on the scanner box, follow, export
 lab run --remote --attach   follow the scanner box's run in progress
+lab run --remote --stop     stop it, clean up, and report anything left behind
 lab open [precogly|secobserve] [-n]
                             open a box in the browser (-n prints the URL); none lists them
 lab auth login|status|logout

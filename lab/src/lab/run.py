@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import signal
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -43,6 +44,28 @@ class Status(StrEnum):
     TIMEOUT = "timeout"
     # The report exists but SecObserve did not take it.
     UPLOAD_FAILED = "upload-failed"
+    # The run was stopped (`lab run --remote --stop`) while this job ran. Not
+    # uploaded: a partial report would resolve every finding it lacks.
+    STOPPED = "stopped"
+
+
+class Stopped(Exception):
+    """lab was asked to stop, by SIGTERM from `systemctl stop lab-run`."""
+
+
+def stop_on_sigterm() -> None:
+    """Turn the first SIGTERM into `Stopped`, so cleanup runs; ignore the rest.
+
+    Python's default for SIGTERM exits at once and skips every `finally`. Raised
+    while lab waits on `docker run`, `Stopped` also makes subprocess kill that
+    client; the container is the daemon's, so `execute` kills it by name.
+    """
+
+    def handler(signum: int, frame: object) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise Stopped
+
+    signal.signal(signal.SIGTERM, handler)
 
 
 @dataclass(frozen=True)
@@ -166,6 +189,7 @@ def execute(
         exit_code: int | None = None
         counts: secobserve.Counts | None = None
         error: str | None = None
+        stopping = False
         stack_file = Path(str(files("lab") / "stacks" / "precogly" / "compose.yml"))
         stack_env = _stack_environment(rid, job, sha)
         try:
@@ -192,6 +216,11 @@ def execute(
                 status, error = Status.TIMEOUT, str(err)
             else:
                 status = Status.OK
+        except Stopped:
+            # As for a timeout: the client is gone and the container is not.
+            runner.run(docker.kill(container_name(job, run)))
+            status, error = Status.STOPPED, "stopped by `lab run --remote --stop`"
+            stopping = True
         finally:
             if owns_stack:
                 runner.run(
@@ -263,6 +292,10 @@ def execute(
                 error=error,
             )
         )
+        if stopping:
+            # The jobs after this one are not run.
+            on_event(event("run_finished", clock(), run=rid, ok=False, stopped=True))
+            raise Stopped
     ok = all(o.status is Status.OK for o in outcomes)
     on_event(event("run_finished", clock(), run=rid, ok=ok))
     return rid, outcomes

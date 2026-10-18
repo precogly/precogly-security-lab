@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import signal
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 
-from lab.command import DryRunRunner, Effect
+import pytest
+
+from lab.command import Command, DryRunRunner, Effect, Result
 from lab.command.fake import FakeRunner
 from lab.command.secobserve import Counts
 from lab.job import Input, load_job
-from lab.run import Status, execute, run_id
+from lab.run import Status, Stopped, execute, run_id, stop_on_sigterm
 from lab.target import load_target
 
 SHA = "94dd831e710fe11d7f344d0cddee3003c8819f2f"
@@ -22,8 +27,8 @@ ZAP = load_job(Path(str(files("lab") / "jobs" / "zap-baseline.toml")))
 TARGET = load_target(Path(str(files("lab") / "targets" / "pentest.toml")))
 
 
-def lab_box() -> FakeRunner:
-    box = FakeRunner()
+def lab_box(box: FakeRunner | None = None) -> FakeRunner:
+    box = box or FakeRunner()
     box.on("tailscale", "status", stdout='{"MagicDNSSuffix": "tail1234.ts.net"}')
     box.on("tailscale", "ip", stdout="100.64.0.7\n")
     box.on("aws", "ssm", stdout=SHA + "\n")
@@ -79,8 +84,8 @@ TOKEN = "so-token-0123456789abcdef"
 UPLOAD = "/api/import/file_upload_observations_by_name/"
 
 
-def real_box() -> FakeRunner:
-    box = lab_box()
+def real_box(box: FakeRunner | None = None) -> FakeRunner:
+    box = lab_box(box)
     box.on("aws", "secretsmanager", stdout=TOKEN + "\n")
     box.respond(
         "POST",
@@ -246,3 +251,54 @@ def test_a_stack_is_ready_before_the_job_and_always_removed(tmp_path: Path) -> N
     assert up < scan < down
     assert "--volumes" in commands[down]
     assert "lab-20261017t163000z-94dd831-schemathesis_stack" in commands[scan]
+
+
+class StopsDuring(FakeRunner):
+    """A box where SIGTERM arrives while one job's container runs."""
+
+    def __init__(self, job: str) -> None:
+        super().__init__()
+        self._name = f"lab-20261017t163000z-94dd831-{job}"
+
+    def run(self, command: Command) -> Result:
+        if command.argv[:5] == ("docker", "run", "--rm", "--name", self._name):
+            self.commands.append(command)
+            raise Stopped
+        return super().run(command)
+
+
+def test_a_stop_kills_the_job_records_it_and_runs_nothing_after(
+    tmp_path: Path,
+) -> None:
+    box = real_box(StopsDuring("first"))
+    events: list[dict[str, object]] = []
+    first, second = replace(ZAP, name="first"), replace(ZAP, name="second")
+
+    with pytest.raises(Stopped):
+        execute(
+            [first, second], TARGET, box, now=NOW, root=tmp_path, on_event=events.append
+        )
+
+    assert ("docker", "kill", "lab-20261017t163000z-94dd831-first") in box.argvs()
+    # A partial report would resolve every finding it lacks.
+    assert not box.requests
+    assert meta(box)["status"] == "stopped"
+    assert not any("second" in arg for a in box.argvs() for arg in a)
+    assert [(e["type"], e.get("status"), e.get("stopped")) for e in events[-2:]] == [
+        ("job_finished", "stopped", None),
+        ("run_finished", None, True),
+    ]
+
+
+def test_the_first_sigterm_stops_and_the_next_is_ignored() -> None:
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        stop_on_sigterm()
+        with pytest.raises(Stopped):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
+        # Cleanup must not be interrupted by systemd's or anyone's second signal.
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(0.1)
+    finally:
+        signal.signal(signal.SIGTERM, previous)

@@ -37,11 +37,14 @@ from lab.findings import FindingsError, StatusChoice
 from lab.job import Job, JobError, load_jobs
 from lab.progress import Display
 from lab.remote import RemoteError
-from lab.run import ROOT, SECOBSERVE_HOST, Status, execute
+from lab.run import ROOT, SECOBSERVE_HOST, Status, Stopped, execute, stop_on_sigterm
 from lab.target import TargetError, load_target
 
 # The only target until a second exists, so `lab run` takes no --target.
 TARGET = "pentest"
+STOPPED_MESSAGE = (
+    "stopped by `lab run --remote --stop`; the job running then was not uploaded"
+)
 
 app = typer.Typer(
     help="Run scan jobs against the lab's Precogly instance.",
@@ -143,6 +146,12 @@ def run(
         bool,
         typer.Option("--attach", help="Follow the scanner box's run in progress."),
     ] = False,
+    stop_run: Annotated[
+        bool,
+        typer.Option(
+            "--stop", help="Stop the scanner box's run in progress, and clean up."
+        ),
+    ] = False,
     output: Annotated[
         Path | None,
         typer.Option(
@@ -155,6 +164,11 @@ def run(
     ] = None,
 ) -> None:
     """Run jobs, then upload each report to SecObserve."""
+    if stop_run:
+        if names or everything or attach or output or dry_run:
+            raise JobError("--stop stops the run in progress; it takes nothing else")
+        _remote_stop()
+        return
     if remote_run or attach:
         if dry_run:
             raise JobError(
@@ -177,6 +191,7 @@ def run(
     log = EventLog(events_to) if events_to else None
     if log:
         log(event("version", now, events=VERSION, lab=lab_commit()))
+    stop_on_sigterm()
     try:
         selected = _select(load_jobs(_definitions("jobs")), names or [], everything)
         target = load_target(_definitions("targets") / f"{TARGET}.toml")
@@ -186,6 +201,12 @@ def run(
         rid, outcomes = execute(
             selected, target, runner, now=now, on_event=log or (lambda _: None)
         )
+    except Stopped:
+        # Stopped between jobs leaves no last event; after run_finished, a
+        # follower has already stopped reading, so a second one is harmless.
+        if log:
+            log(event("failed", datetime.now(UTC), error=STOPPED_MESSAGE))
+        raise
     except Exception as err:
         # A follower would otherwise wait for jobs that will never start.
         if log:
@@ -207,6 +228,19 @@ def run(
     print(f"run {rid}")
     if not all(o.status is Status.OK for o in outcomes):
         raise typer.Exit(1)
+
+
+def _remote_stop() -> None:
+    """Stop the scanner box's run, then report anything it left behind."""
+    runner = LiveRunner()
+    stopped = remote.stop(runner)
+    print(f"lab: stopped {stopped.description}, running since {stopped.since}")
+    if left := remote.leftovers(runner):
+        print("lab: left on the scanner box after the stop:", file=sys.stderr)
+        for item in left:
+            print(f"  {item}", file=sys.stderr)
+        raise typer.Exit(1)
+    print("lab: nothing left behind")
 
 
 def _remote(
@@ -258,6 +292,8 @@ def _remote(
                     )
             elif item["type"] == "run_finished":
                 ok = bool(item.get("ok"))
+                if item.get("stopped"):
+                    print(f"lab: {STOPPED_MESSAGE}", file=sys.stderr)
             elif item["type"] == "failed":
                 raise RemoteError(f"the run failed: {item.get('error')}")
     except KeyboardInterrupt:
@@ -418,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
         app(args=argv, prog_name="lab")
     except SystemExit as done:
         return done.code if isinstance(done.code, int) else 0
+    except Stopped:
+        print(f"lab: {STOPPED_MESSAGE}", file=sys.stderr)
+        # 128 + SIGTERM, as a shell reports a process SIGTERM ended.
+        return 143
     except HttpError as err:
         print(f"lab: {auth.rejected(err) or err}", file=sys.stderr)
         return 1

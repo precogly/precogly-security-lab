@@ -985,6 +985,7 @@ for whoever is triaging: scan the current commit, then read what changed.
 ```text
 lab run --all --remote -o findings.json   # run on the scanner box, then export
 lab run --remote --attach                 # follow the run in progress
+lab run --remote --stop                   # stop it, and clean up after it
 ```
 
 It cannot be one command on the scanner box: the box's token may upload and not
@@ -1028,6 +1029,15 @@ Tailscale SSH and exports with the person's own token, as `lab findings` does.
   the same name, and `--collect` stops a failed run holding it. A second
   `lab run --remote` reports the run in progress, who started it, when and at which
   commit, and the command that attaches to it.
+- **A stop cleans up, and uploads nothing.** `lab run --remote --stop` runs
+  `systemctl stop lab-run`. The unit has `KillMode=mixed`, so SIGTERM reaches lab
+  alone; by default every process gets it at once, and `docker run` would forward it
+  to the container mid-cleanup. lab turns the first SIGTERM into an exception, so
+  the running job's container is killed, its stack taken down and its `meta.json`
+  written as `stopped`, and the jobs after it do not run. A stopped job's report is
+  not uploaded: partial, it would resolve every finding it lacks. `--stop` then
+  lists any `lab-` container, network or Compose volume left on the box. Checked on
+  a `schemathesis` run with its stack up (2026-10-18): stopped and clean in 12 s.
 - **Progress is per job, never a percentage.** None of the scanners reports progress
   without a terminal, checked in their source at the pinned versions: Semgrep and
   Grype turn their bars off, Trivy's only bar is its database download, and ZAP
@@ -1164,6 +1174,7 @@ lab run <job> --dry-run        read the real tailnet, address and commit; print 
                                change a run would make; make none
 lab run ... --remote [-o FILE] run on the scanner box from a laptop, then export
 lab run --remote --attach      follow the run in progress on the scanner box
+lab run --remote --stop        stop that run, clean up, report any leftovers
 lab findings [-o FILE] [--job JOB] [--status STATUS]...
                                export active findings from SecObserve as JSON
 lab auth login|status|logout   mint, show, or revoke this machine's SecObserve token

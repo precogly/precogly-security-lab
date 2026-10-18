@@ -49,7 +49,8 @@ def test_start_runs_lab_as_the_locking_unit() -> None:
 
     [start] = [c for c in box.commands if "systemd-run" in c.argv[-1]]
     assert start.argv[-1] == (
-        "sudo systemd-run --unit=lab-run --collect --uid=ubuntu "
+        "sudo systemd-run --unit=lab-run --collect --property=KillMode=mixed "
+        "--property=TimeoutStopSec=180 --uid=ubuntu "
         "'--description=lab-run 0123abcd started by alvin@laptop' "
         "/usr/local/bin/lab run --events /var/lib/lab/events/0123abcd.jsonl --all"
     )
@@ -61,7 +62,8 @@ def test_a_lost_race_to_start_is_the_lock() -> None:
     # FakeRunner matches the remote command as one argv element.
     box.on(
         *SHOW,
-        "sudo systemd-run --unit=lab-run --collect --uid=ubuntu "
+        "sudo systemd-run --unit=lab-run --collect --property=KillMode=mixed "
+        "--property=TimeoutStopSec=180 --uid=ubuntu "
         "'--description=lab-run feed started by me' "
         "/usr/local/bin/lab run --events /var/lib/lab/events/feed.jsonl semgrep",
         returncode=1,
@@ -136,4 +138,40 @@ def test_off_a_terminal_each_job_is_a_line() -> None:
         "  ✓ semgrep          ok · 36 updated (1m12s)",
         "  started  zap",
         "  ✗ zap              timeout · timed out (0m00s)",
+    ]
+
+
+def test_stop_needs_a_run_in_progress() -> None:
+    box = FakeRunner()
+    box.on(*SHOW, stdout=IDLE)
+    with pytest.raises(RemoteError, match="no run is in progress"):
+        remote.stop(box)
+
+
+def test_stop_waits_for_systemd_and_says_whose_run_it_was() -> None:
+    box = FakeRunner()
+    box.on(*SHOW, stdout=RUNNING)
+    stopped = remote.stop(box)
+    assert "started by alvin@laptop" in stopped.description
+    [stop] = [c for c in box.commands if "systemctl stop" in c.argv[-1]]
+    assert stop.argv[-1] == "sudo systemctl stop lab-run"
+    # Outlasts TimeoutStopSec, so a slow cleanup is not reported as a failure.
+    assert stop.timeout is not None and stop.timeout > 180
+
+
+def test_leftovers_are_lab_s_alone() -> None:
+    box = FakeRunner()
+    box.on(
+        *SHOW,
+        stdout=(
+            "container lab-20261018t194134z-94dd831-schemathesis\n"
+            "network lab-20261018t194134z-94dd831-schemathesis_stack\n"
+            "volume 3f2a lab-20261018t194134z-94dd831-schemathesis\n"
+            "volume 9c1b someone-elses-project\n"
+        ),
+    )
+    assert remote.leftovers(box) == [
+        "container lab-20261018t194134z-94dd831-schemathesis",
+        "network lab-20261018t194134z-94dd831-schemathesis_stack",
+        "volume 3f2a lab-20261018t194134z-94dd831-schemathesis",
     ]

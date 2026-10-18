@@ -106,6 +106,13 @@ def start(runner: CommandRunner, nonce: str, who: str, selection: list[str]) -> 
         f"--unit={UNIT}",
         # A failed unit is unloaded too, so it does not hold the lock.
         "--collect",
+        # SIGTERM to lab alone, which then stops its job in order (`lab.run.
+        # stop_on_sigterm`). By default systemd signals every process at once,
+        # and `docker run` would forward it to the container mid-cleanup.
+        "--property=KillMode=mixed",
+        # Arbitrary: room to kill a container and take a stack down before
+        # SIGKILL. Too short and the stack is left behind.
+        "--property=TimeoutStopSec=180",
         "--uid=ubuntu",
         f"--description={UNIT} {nonce} started by {who}",
         "/usr/local/bin/lab",
@@ -124,6 +131,45 @@ def start(runner: CommandRunner, nonce: str, who: str, selection: list[str]) -> 
             raise busy(running) from None
         raise
     return unit(runner)
+
+
+def stop(runner: CommandRunner) -> Unit:
+    """Stop the run in progress, waiting until lab has cleaned up and exited.
+
+    Returns the unit as it was, to say whose run was stopped.
+    """
+    running = unit(runner)
+    if not running.active:
+        raise RemoteError("no run is in progress on the scanner box")
+    # systemctl stop waits for the unit to end: lab's cleanup, or SIGKILL after
+    # TimeoutStopSec, so the SSH timeout must outlast it.
+    runner.run(ssh("sudo", "systemctl", "stop", UNIT, effect=Effect.WRITE, timeout=300))
+    return running
+
+
+def leftovers(runner: CommandRunner) -> list[str]:
+    """Containers, networks and Compose volumes a run left on the box.
+
+    Every job container and stack is named `lab-<run>-...`, and runs go one at a
+    time, so anything of that name is a stop or crash that was not cleaned up.
+    """
+    script = (
+        "docker ps -a --filter name=^lab- --format 'container {{.Names}}'; "
+        "docker network ls --filter name=^lab- --format 'network {{.Name}}'; "
+        "docker volume ls --filter label=com.docker.compose.project "
+        "--format 'volume {{.Name}} {{.Label \"com.docker.compose.project\"}}'"
+    )
+    out = runner.run(ssh("sh", "-c", script)).stdout
+    found = []
+    for line in out.splitlines():
+        # A volume line names its Compose project last; keep lab's only.
+        if line.startswith("volume ") and not line.rsplit(" ", 1)[-1].startswith(
+            "lab-"
+        ):
+            continue
+        if line.strip():
+            found.append(line.strip())
+    return found
 
 
 def follow(runner: CommandRunner, nonce: str, main_pid: int) -> Generator[Event]:
