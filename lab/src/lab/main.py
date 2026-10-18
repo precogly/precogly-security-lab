@@ -37,7 +37,7 @@ from lab.findings import FindingsError, StatusChoice
 from lab.job import Job, JobError, load_jobs
 from lab.progress import Display
 from lab.remote import RemoteError
-from lab.run import SECOBSERVE_HOST, Status, execute
+from lab.run import ROOT, SECOBSERVE_HOST, Status, execute
 from lab.target import TargetError, load_target
 
 # The only target until a second exists, so `lab run` takes no --target.
@@ -165,6 +165,13 @@ def run(
         return
     if output:
         raise JobError("-o exports after a --remote run; use `lab findings -o`")
+    # Only the scanner box's first boot creates the run root. Anywhere else, say
+    # where runs go instead of failing on the first mkdir.
+    if not dry_run and not ROOT.is_dir():
+        raise JobError(
+            f"lab run runs on the scanner box, which has {ROOT}; from here, use "
+            "`lab run --remote <job>...`, or --dry-run to see what a run would do"
+        )
 
     now = datetime.now(UTC)
     log = EventLog(events_to) if events_to else None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import lab
@@ -39,3 +41,15 @@ def test_open_derives_each_url_and_precogly_is_pentest(
         "https://pentest.tail1234.ts.net",
         "https://secobserve.tail1234.ts.net",
     ]
+
+
+def test_run_off_the_scanner_box_says_where_runs_go(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A laptop has no /var/lib/lab; the first mkdir would fail with only
+    # "Permission denied".
+    monkeypatch.setattr(main_module, "ROOT", tmp_path / "no-such-dir")
+    assert main(["run", "zap-baseline"]) == 1
+    assert "--remote" in capsys.readouterr().err
