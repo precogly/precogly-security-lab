@@ -904,6 +904,29 @@ lab auth logout    revoke the token in SecObserve, then forget it
   at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`, and only then fails,
   linking Tailscale's install page.
 
+**Opening the boxes: `lab open`.** The URLs are derived, not remembered: the target
+file gives Precogly's, `secobserve` gives SecObserve's, and the local tailscale gives
+the tailnet, so `lab open` needs neither AWS nor Terraform, as `terraform output`
+would. It follows `heroku open`, `fly open` and `gh browse`, whose `-n` prints the
+URL instead.
+
+```text
+lab open pentest | precogly     open Precogly
+lab open secobserve             open SecObserve
+lab open secobserve -n          print the URL, for a script or a machine with no browser
+lab open                        list both
+```
+
+- **`precogly` is an alias of `pentest`**, the name a person reaches for; the URL
+  and the tailnet keep the machine's name. Rejected: renaming the machine. The name
+  is set into the box at first boot: Caddy's site and certificate, Django's allowed
+  hosts and origins, and the check that the box joined under the name expected, so a
+  rename in Tailscale's console takes Precogly down. Renaming through
+  `instance_name` replaces the box, and every ZAP finding, keyed by its endpoint
+  URL, would resolve and return as new.
+- It opens through Python's `webbrowser`, which honours `$BROWSER`, and prints the
+  URL when there is no browser to open.
+
 **Running from a laptop: `lab run --remote`.** Scanning and exporting are one step
 for whoever is triaging: scan the current commit, then read what changed.
 
@@ -1092,6 +1115,7 @@ lab run --remote --attach      follow the run in progress on the scanner box
 lab findings [-o FILE] [--job JOB] [--status STATUS]...
                                export active findings from SecObserve as JSON
 lab auth login|status|logout   mint, show, or revoke this machine's SecObserve token
+lab open [BOX] [-n]            open Precogly or SecObserve in the browser, or print its URL
 ```
 
 - **`--check` is how a job is developed:** run the job as a real run would, parse each
