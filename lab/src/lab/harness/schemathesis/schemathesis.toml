@@ -1,0 +1,10 @@
+base-url = "http://backend:8000"
+
+[headers]
+X-Forwarded-Proto = "https"
+
+# A single path filter is deliberate. Filters in one operation block combine
+# as OR in 4.32.0, so adding a method filter here would silently widen it.
+[[operations]]
+include-path-regex = "^/api/auth/"
+enabled = false

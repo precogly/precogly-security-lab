@@ -230,3 +230,19 @@ def test_a_run_reports_each_job_as_it_starts_and_ends(tmp_path: Path) -> None:
     assert events[0]["jobs"] == ["first", "second"]
     assert events[2]["observations"] == {"new": 13, "updated": 0, "resolved": 0}
     assert events[-1]["ok"] is True
+
+
+def test_a_stack_is_ready_before_the_job_and_always_removed(tmp_path: Path) -> None:
+    box = real_box()
+    stack = replace(ZAP, name="schemathesis", inputs=frozenset({Input.STACK}))
+    execute([stack], TARGET, box, now=NOW, root=tmp_path)
+
+    commands = box.argvs()
+    up = next(
+        i for i, argv in enumerate(commands) if argv[-2:] == ("--detach", "--wait")
+    )
+    scan = next(i for i, argv in enumerate(commands) if argv[:2] == ("docker", "run"))
+    down = next(i for i, argv in enumerate(commands) if "down" in argv)
+    assert up < scan < down
+    assert "--volumes" in commands[down]
+    assert "lab-20261017t163000z-94dd831-schemathesis_stack" in commands[scan]

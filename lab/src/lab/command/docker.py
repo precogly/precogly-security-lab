@@ -37,6 +37,82 @@ def kill(name: str) -> Command:
     return Command(("docker", "kill", name), Effect.WRITE, timeout=30, check=False)
 
 
+def compose_up(
+    compose_file: Path, project: str, *, environment: Mapping[str, str]
+) -> Command:
+    """Start a job's stack and wait until its one-shot seed and backend are ready."""
+    return Command(
+        (
+            "docker",
+            "compose",
+            "--file",
+            str(compose_file),
+            "--project-name",
+            project,
+            "up",
+            "--detach",
+            "--wait",
+        ),
+        Effect.WRITE,
+        env=dict(environment),
+        secret=frozenset({"POSTGRES_PASSWORD", "SECRET_KEY"}),
+        timeout=15 * 60,
+    )
+
+
+def compose_down(
+    compose_file: Path, project: str, *, environment: Mapping[str, str]
+) -> Command:
+    """Delete a job's stack, including its database volume and orphan containers."""
+    return Command(
+        (
+            "docker",
+            "compose",
+            "--file",
+            str(compose_file),
+            "--project-name",
+            project,
+            "down",
+            "--volumes",
+            "--remove-orphans",
+        ),
+        Effect.WRITE,
+        env=dict(environment),
+        secret=frozenset({"POSTGRES_PASSWORD", "SECRET_KEY"}),
+        timeout=5 * 60,
+        check=False,
+    )
+
+
+def compose_logs(
+    compose_file: Path,
+    project: str,
+    output: Path,
+    *,
+    environment: Mapping[str, str],
+) -> Command:
+    """Save the backend request log before the throwaway stack is removed."""
+    return Command(
+        (
+            "docker",
+            "compose",
+            "--file",
+            str(compose_file),
+            "--project-name",
+            project,
+            "logs",
+            "--no-color",
+            "backend",
+        ),
+        Effect.WRITE,
+        env=dict(environment),
+        secret=frozenset({"POSTGRES_PASSWORD", "SECRET_KEY"}),
+        timeout=60,
+        check=False,
+        output=output,
+    )
+
+
 def inspect_image(ref: str) -> Command:
     return Command(
         ("docker", "image", "inspect", "--format", "{{.Id}}", ref),

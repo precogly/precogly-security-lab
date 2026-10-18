@@ -78,6 +78,12 @@ disallow_untyped_defs = false
 module = ["django", "django.*"]
 ignore_missing_imports = true
 
+# These files run inside images that provide Django or Schemathesis; neither is
+# a dependency of the lab CLI's environment.
+[[tool.mypy.overrides]]
+module = ["lab.harness.schemathesis.*", "lab.stacks.precogly.*"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra -q --strict-markers --strict-config"

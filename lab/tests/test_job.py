@@ -44,6 +44,11 @@ report    = "findings.sarif"
     assert job.inputs == {Input.IMAGES}
 
 
+def test_loads_an_entrypoint_override(tmp_path: Path) -> None:
+    job = load_job(write(tmp_path, ZAP + 'entrypoint = "python"\n'))
+    assert job.entrypoint == "python"
+
+
 def test_load_jobs_keys_by_name(tmp_path: Path) -> None:
     write(tmp_path, ZAP)
     assert list(load_jobs(tmp_path)) == ["zap-baseline"]

@@ -23,7 +23,8 @@ HOST_KEYS_SECRET="${host_keys_secret_arn}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y docker.io jq
+# Compose runs each throwaway Precogly a job needs (docs/design.md, D13).
+apt-get install -y docker.io docker-compose-v2 jq
 usermod -aG docker ubuntu
 
 # lab's prerequisites: uv to install it, and the directory runs land in. lab

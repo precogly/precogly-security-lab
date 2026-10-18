@@ -1,0 +1,11 @@
+# Fuzz every non-auth API operation against a fresh Precogly and replay tenant-
+# sensitive requests as the other seeded tenant. The hooks always write SARIF,
+# including low-severity findings for object reads that could not be probed.
+name      = "schemathesis"
+image     = "ghcr.io/schemathesis/schemathesis:4.32.0"
+inputs    = ["precogly-stack"]
+assets    = "harness/schemathesis"
+entrypoint = "python"
+command   = ["/job/run.py"]
+report    = "report.sarif"
+timeout   = "2h"

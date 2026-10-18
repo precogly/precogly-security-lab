@@ -16,6 +16,9 @@ class Input(StrEnum):
 
     SOURCE = "precogly-source"
     IMAGES = "precogly-images"
+    # A throwaway Precogly of the job's own, which the job targets instead of the
+    # instance (lab.stack). Not mounted: the job reaches it over its network.
+    STACK = "precogly-stack"
 
 
 # Images built from Input.IMAGES, usable as a job's image with "@".
@@ -54,6 +57,7 @@ _FIELDS = frozenset(
         "secrets",
         "timeout",
         "out_mount",
+        "entrypoint",
     }
 )
 # No parser name: SecObserve detects the parser from the report itself.
@@ -80,6 +84,8 @@ class Job:
     timeout_seconds: int
     # Where the run directory is mounted; the report is relative to it.
     out_mount: str
+    # Override an image's ENTRYPOINT when an asset wrapper must orchestrate it.
+    entrypoint: str | None = None
 
     @property
     def built_image(self) -> str | None:
@@ -156,6 +162,10 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
     if assets is not None and not isinstance(assets, str):
         raise JobError("assets must be a string")
 
+    entrypoint = raw.get("entrypoint")
+    if entrypoint is not None and (not isinstance(entrypoint, str) or not entrypoint):
+        raise JobError("entrypoint must be a non-empty string")
+
     scans_image = raw.get("scans_image")
     if scans_image is not None:
         if scans_image not in BUILT_IMAGES:
@@ -183,6 +193,7 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
         secrets=secrets,
         timeout_seconds=_duration(raw.get("timeout", DEFAULT_TIMEOUT)),
         out_mount=str(mount),
+        entrypoint=entrypoint,
     )
 
 

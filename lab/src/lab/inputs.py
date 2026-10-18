@@ -47,7 +47,8 @@ def prepare(
     if Input.SOURCE in wanted:
         paths[Input.SOURCE] = source
 
-    if Input.IMAGES in wanted:
+    # A stack runs the backend image, so it needs the images built, not saved.
+    if wanted & {Input.IMAGES, Input.STACK}:
         images = base / "precogly-images"
         runner.run(fs.mkdir(images))
         for name, context, dockerfile in _IMAGES:
@@ -63,8 +64,9 @@ def prepare(
                 )
             # Saved for jobs that scan images as files (trivy image --input).
             tar = images / f"{name.removeprefix('precogly-')}.tar"
-            if not tar.exists():
+            if Input.IMAGES in wanted and not tar.exists():
                 runner.run(docker.save(ref, tar))
-        paths[Input.IMAGES] = images
+        if Input.IMAGES in wanted:
+            paths[Input.IMAGES] = images
 
     return paths

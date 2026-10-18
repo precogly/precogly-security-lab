@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -24,7 +25,7 @@ from lab.command import (
 )
 from lab.container import Run, built_image_ref, container_name, run_args
 from lab.events import Event, event
-from lab.job import Job
+from lab.job import Input, Job
 from lab.target import Target
 
 # Terraform's default region.
@@ -82,6 +83,24 @@ def tool_version(job: Job) -> str:
     return name.split("@", 1)[1] if "@" in name else name.partition(":")[2]
 
 
+def stack_project(run_id: str, job: str) -> str:
+    """Compose project name, and therefore network prefix, for one job."""
+    return f"lab-{run_id}-{job}".lower()
+
+
+def _stack_environment(run_id: str, job: Job, sha: str) -> dict[str, str]:
+    # These credentials protect only an internal, throwaway network. Deriving
+    # them avoids persisting state while keeping dry runs reproducible.
+    def credential(label: str) -> str:
+        return hashlib.sha256(f"{run_id}:{job.name}:{label}".encode()).hexdigest()
+
+    return {
+        "BACKEND_IMAGE": built_image_ref("precogly-backend", sha),
+        "POSTGRES_PASSWORD": credential("postgres"),
+        "SECRET_KEY": credential("django"),
+    }
+
+
 def execute(
     jobs: list[Job],
     target: Target,
@@ -121,16 +140,19 @@ def execute(
     for job in jobs:
         out_dir = run_dir / job.name
         runner.run(fs.mkdir(out_dir))
+        owns_stack = Input.STACK in job.inputs
+        project = stack_project(rid, job.name)
         run = Run(
             run_id=rid,
             precogly_sha=sha,
-            target_url=target.url(tailnet),
-            target_host=host,
+            target_url="http://backend:8000" if owns_stack else target.url(tailnet),
+            target_host="backend" if owns_stack else host,
             target_ip=address,
             out_dir=out_dir,
             target_json=target_json,
             inputs=prepared,
             assets_dir=assets_dir(job),
+            network=f"{project}_stack" if owns_stack else "bridge",
         )
         started = clock()
         on_event(event("job_started", started, job=job.name))
@@ -143,20 +165,47 @@ def execute(
         exit_code: int | None = None
         counts: secobserve.Counts | None = None
         error: str | None = None
+        stack_file = Path(str(files("lab") / "stacks" / "precogly" / "compose.yml"))
+        stack_env = _stack_environment(rid, job, sha)
         try:
-            exit_code = runner.run(
-                docker.run_job(
-                    run_args(job, run),
-                    secrets=secrets,
-                    timeout=job.timeout_seconds,
-                    log=out_dir / "job.log",
+            if owns_stack:
+                runner.run(
+                    docker.compose_up(
+                        stack_file,
+                        project,
+                        environment=stack_env,
+                    )
                 )
-            ).returncode
-        except CommandTimeout as err:
-            # The timeout killed the docker client, not the container.
-            runner.run(docker.kill(container_name(job, run)))
-            status, error = Status.TIMEOUT, str(err)
-        else:
+            try:
+                exit_code = runner.run(
+                    docker.run_job(
+                        run_args(job, run),
+                        secrets=secrets,
+                        timeout=job.timeout_seconds,
+                        log=out_dir / "job.log",
+                    )
+                ).returncode
+            except CommandTimeout as err:
+                # The timeout killed the docker client, not the container.
+                runner.run(docker.kill(container_name(job, run)))
+                status, error = Status.TIMEOUT, str(err)
+            else:
+                status = Status.OK
+        finally:
+            if owns_stack:
+                runner.run(
+                    docker.compose_logs(
+                        stack_file,
+                        project,
+                        out_dir / "backend.log",
+                        environment=stack_env,
+                    )
+                )
+                runner.run(
+                    docker.compose_down(stack_file, project, environment=stack_env)
+                )
+
+        if status is Status.OK:
             report = out_dir / job.report
             # An upload resolves every finding the report lacks, so a missing
             # or empty report must never be sent: it would resolve the job's
@@ -184,7 +233,6 @@ def execute(
                             ),
                         ),
                     )
-                    status = Status.OK
                 except (CommandError, sarif.SarifError) as err:
                     status, error = Status.UPLOAD_FAILED, str(err)
 

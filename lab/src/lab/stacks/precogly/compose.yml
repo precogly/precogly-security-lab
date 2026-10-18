@@ -1,0 +1,75 @@
+# A throwaway Precogly for one job: its own database, seeded fresh, on a network
+# with no way out (docs/design.md, D13). lab sets every ${...} below, starts it as
+# its own Compose project, runs the job on its network, and deletes it all after.
+#
+# The settings copy the instance's (terraform/precogly-user-data.sh.tftpl), so a
+# change there is made here too. Each service is one container of the Fargate
+# task this becomes in Phase B, and each depends_on condition has an ECS
+# dependsOn equivalent: service_healthy is HEALTHY, service_completed_successfully
+# is SUCCESS.
+
+x-backend: &backend
+  image: ${BACKEND_IMAGE}
+  environment:
+    DATABASE_URL: postgres://precogly:${POSTGRES_PASSWORD}@db:5432/precogly
+    DJANGO_SETTINGS_MODULE: config.settings.workshop
+    SECRET_KEY: ${SECRET_KEY}
+    ALLOWED_HOSTS: backend
+    CORS_ALLOWED_ORIGINS: http://backend
+    FRONTEND_URL: http://backend
+    MCP_RESOURCE_URL: http://backend/mcp
+    MCP_ISSUER_URL: http://backend
+    # Not the instance's: the stack logs each request, which is how a fuzz run
+    # shows what it sent. Gunicorn reads this, so the image's command is not copied.
+    GUNICORN_CMD_ARGS: --access-logfile -
+  volumes:
+    # The instance's settings file, which the image does not carry: the instance
+    # writes it into its checkout at first boot.
+    - ./workshop.py:/app/backend/config/settings/workshop.py:ro
+  networks: [stack]
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: precogly
+      POSTGRES_USER: precogly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U precogly -d precogly"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    networks: [stack]
+
+  seed:
+    <<: *backend
+    command: ["sh", "-c", "python manage.py migrate --noinput && python manage.py seed"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      # The schema needs no login. The header is the one Caddy sends; without it
+      # production settings redirect plain HTTP to HTTPS.
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request as u;
+          u.urlopen(u.Request('http://localhost:8000/api/schema/',
+          headers={'X-Forwarded-Proto': 'https', 'Host': 'backend'}), timeout=5)
+      interval: 3s
+      timeout: 10s
+      retries: 60
+
+networks:
+  stack:
+    # No route out: a fuzzed backend reaches its database and nothing else.
+    internal: true

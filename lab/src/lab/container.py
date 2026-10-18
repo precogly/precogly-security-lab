@@ -23,6 +23,9 @@ class Run:
     target_json: Path
     inputs: dict[Input, Path]
     assets_dir: Path | None
+    # Set for a job with precogly-stack. Its scanner joins this internal network
+    # and targets the backend service, rather than the shared lab instance.
+    network: str = "bridge"
 
 
 def built_image_ref(name: str, sha: str) -> str:
@@ -63,15 +66,23 @@ def run_args(job: Job, run: Run) -> list[str]:
         # container cannot reach the metadata service, so cannot take the box's
         # role, which can read lab's SecObserve upload token.
         "--network",
-        "bridge",
-        "--add-host",
-        f"{run.target_host}:{run.target_ip}",
+        run.network,
+    ]
+    if run.network == "bridge":
+        # On a stack network Docker DNS resolves `backend`; an /etc/hosts entry
+        # would override it with the shared instance's tailnet address.
+        args += ["--add-host", f"{run.target_host}:{run.target_ip}"]
+    if job.entrypoint:
+        args += ["--entrypoint", job.entrypoint]
+    args += [
         "--volume",
         f"{run.out_dir}:{job.out_mount}",
         "--volume",
         f"{run.target_json}:/run/lab/target.json:ro",
     ]
     for name in sorted(job.inputs):
+        if name is Input.STACK:
+            continue
         args += ["--volume", f"{run.inputs[name]}:/in/{name}:ro"]
     if job.assets:
         if run.assets_dir is None:

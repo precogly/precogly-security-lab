@@ -85,3 +85,23 @@ def test_mounts_the_run_directory_where_the_job_asks() -> None:
     args = run_args(replace(ZAP, out_mount="/zap/wrk"), RUN)
     assert f"{RUN.out_dir}:/zap/wrk" in args
     assert "OUT_DIR=/zap/wrk" in args
+
+
+def test_a_stack_job_joins_its_network_without_pinning_backend() -> None:
+    stack = replace(
+        ZAP,
+        inputs=frozenset({Input.STACK}),
+        entrypoint="python",
+    )
+    run = replace(
+        RUN,
+        target_url="http://backend:8000",
+        target_host="backend",
+        network="lab-run-zap_stack",
+    )
+    args = run_args(stack, run)
+
+    assert args[args.index("--network") + 1] == "lab-run-zap_stack"
+    assert "--add-host" not in args
+    assert "--entrypoint" in args
+    assert not any("precogly-stack:/in" in arg for arg in args)
