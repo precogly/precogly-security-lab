@@ -33,6 +33,10 @@ def read_text(runner: CommandRunner, path: Path) -> str:
     return runner.run(cat(path)).stdout
 
 
+def remove_tree(path: Path) -> Command:
+    return Command(("rm", "-rf", "--", str(path)), Effect.WRITE)
+
+
 def mkdir(path: Path) -> Command:
     return Command(("mkdir", "-p", str(path)), Effect.WRITE)
 

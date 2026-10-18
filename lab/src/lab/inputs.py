@@ -25,6 +25,29 @@ _IMAGES = (
 )
 
 
+def prune(runner: CommandRunner, sha: str, root: Path) -> None:
+    """Delete every other commit's checkout, images and image files.
+
+    Each deployed commit adds a checkout and a backend and frontend build, about
+    0.3 GB of files and more in images, and nothing else removes them. Only the
+    commit being run is kept: a run builds everything it needs from the
+    instance's commit (docs/design.md, D13), so an older commit's copies are
+    used only by a rollback, which rebuilds them. Run directories are kept; they
+    are the record of past runs, and small.
+    """
+    cached = root / "inputs"
+    if cached.is_dir():
+        for path in sorted(cached.iterdir()):
+            if path.name != sha:
+                runner.run(fs.remove_tree(path))
+    for name, _, _ in _IMAGES:
+        repository = built_image_ref(name, sha).rpartition(":")[0]
+        listed = runner.run(docker.list_images(repository)).stdout.split()
+        stale = [ref for ref in listed if ref != built_image_ref(name, sha)]
+        if stale:
+            runner.run(docker.remove_images(stale))
+
+
 def prepare(
     runner: CommandRunner, wanted: frozenset[Input], sha: str, root: Path
 ) -> dict[Input, Path]:

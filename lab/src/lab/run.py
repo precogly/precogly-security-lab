@@ -132,6 +132,7 @@ def execute(
     runner.run(fs.write_text(target_json, target.as_json(tailnet)))
 
     wanted = frozenset().union(*(job.inputs for job in jobs))
+    inputs.prune(runner, sha, root)
     prepared = inputs.prepare(runner, wanted, sha, root)
 
     secobserve_url = f"https://{SECOBSERVE_HOST}.{tailnet}"

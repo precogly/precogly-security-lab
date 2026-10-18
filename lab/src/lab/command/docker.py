@@ -138,3 +138,23 @@ def save(ref: str, path: Path) -> Command:
 
 def image_exists(runner: CommandRunner, ref: str) -> bool:
     return runner.run(inspect_image(ref)).returncode == 0
+
+
+def list_images(repository: str) -> Command:
+    """Every tag of one local repository, a `repository:tag` per line."""
+    return Command(
+        (
+            *("docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"),
+            repository,
+        ),
+        Effect.READ,
+        timeout=30,
+    )
+
+
+def remove_images(refs: list[str]) -> Command:
+    # check=False: an image a stopped container still holds is left for the next
+    # run, rather than failing this one.
+    return Command(
+        ("docker", "image", "rm", *refs), Effect.WRITE, timeout=120, check=False
+    )
