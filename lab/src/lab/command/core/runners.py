@@ -1,106 +1,28 @@
-"""External effects, and the runners that execute them.
-
-Every process lab starts is a `Command`, and every HTTP call an `HttpRequest`;
-each says whether it only reads (`Effect.READ`) or changes something
-(`Effect.WRITE`). `DryRunRunner` performs the reads and prints the writes, so
-`--dry-run` sees the real SHA, tailnet and addresses without building, running
-or uploading anything.
-"""
+"""The runners that perform effects: live, or as a dry run."""
 
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import sys
-from collections.abc import Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass, field
-from enum import Enum
-from pathlib import Path
 from typing import Protocol, TextIO
-from urllib.parse import urlencode
 
 import httpx
 
-# Lines of stderr kept in an error message. Arbitrary: enough for a traceback's
-# last frames, short enough to read.
-_STDERR_TAIL = 20
-
-
-class Effect(Enum):
-    READ = "read"
-    WRITE = "write"
-
-
-@dataclass(frozen=True)
-class Result:
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-@dataclass(frozen=True)
-class Command:
-    argv: tuple[str, ...]
-    effect: Effect
-    # Added to the inherited environment. Values named in `secret` are never
-    # shown: not in `display()`, errors, or dry-run output.
-    env: Mapping[str, str] = field(default_factory=dict)
-    secret: frozenset[str] = frozenset()
-    timeout: float | None = None
-    # A non-zero exit raises CommandError unless this is False. Scan jobs set it,
-    # since scanners exit non-zero when they find something.
-    check: bool = True
-    # Stream stdout and stderr to this file instead of holding them in memory.
-    output: Path | None = None
-    # Fed to the command's stdin. Shown in dry-run output by size only.
-    stdin: str | None = None
-    # What a dry run assumes this command returned, for commands whose output
-    # something downstream reads. A READ with this set is not run in a dry run:
-    # it would read state an earlier, skipped WRITE never produced.
-    dry_run: Result | None = None
-
-    def display(self) -> str:
-        env = [
-            f"{name}=<redacted>" if name in self.secret else f"{name}={value}"
-            for name, value in sorted(self.env.items())
-        ]
-        shown = shlex.join([*env, *self.argv])
-        if self.stdin is not None:
-            shown += f" <<< ({len(self.stdin.encode())} bytes)"
-        return shown
-
-    def redact(self, text: str) -> str:
-        for name in self.secret:
-            if value := self.env.get(name):
-                text = text.replace(value, "<redacted>")
-        return text
-
-
-class CommandError(RuntimeError):
-    """A command that could not run, timed out, or failed when it had to pass."""
-
-    def __init__(self, command: Command, problem: str, stderr: str = "") -> None:
-        tail = "\n".join(command.redact(stderr).strip().splitlines()[-_STDERR_TAIL:])
-        message = f"{command.display()}\n  {problem}"
-        super().__init__(f"{message}\n{tail}" if tail else message)
-
-
-class CommandTimeout(CommandError):
-    """A command that ran past its timeout and was killed.
-
-    Only the process lab started is killed. For `docker run` that is the
-    client, and the container keeps running until killed by name.
-    """
+from lab.command.core.effect import CommandError, CommandTimeout, Effect
+from lab.command.core.http import HttpRequest, HttpResponse
+from lab.command.core.process import Command, Result
 
 
 class CommandRunner(Protocol):
     def run(self, command: Command) -> Result: ...
 
+    def request(self, request: HttpRequest) -> HttpResponse: ...
 
-class SubprocessRunner:
-    """Runs every command."""
+
+class LiveRunner:
+    """Runs every command and sends every request."""
 
     def run(self, command: Command) -> Result:
         env = {**os.environ, **command.env}
@@ -142,9 +64,39 @@ class SubprocessRunner:
             raise CommandError(command, problem, result.stderr)
         return result
 
+    def request(self, request: HttpRequest) -> HttpResponse:
+        with ExitStack() as opened:
+            try:
+                files = None
+                if request.file:
+                    name, path = request.file
+                    files = {name: (path.name, opened.enter_context(path.open("rb")))}
+                response = httpx.request(
+                    request.method,
+                    request.url,
+                    params=list(request.query),
+                    headers=dict(request.headers),
+                    data=dict(request.form) or None,
+                    files=files,
+                    timeout=request.timeout,
+                )
+            except OSError as err:
+                raise CommandError(request, f"cannot read {err.filename}") from None
+            except httpx.TimeoutException:
+                raise CommandTimeout(
+                    request, f"timed out after {request.timeout}s"
+                ) from None
+            except httpx.HTTPError as err:
+                raise CommandError(request, str(err)) from None
+        # Every API lab calls answers 2xx on success, so anything else fails,
+        # with the body: SecObserve says there what was wrong with a request.
+        if not response.is_success:
+            raise CommandError(request, f"HTTP {response.status_code}", response.text)
+        return HttpResponse(response.status_code, response.text)
+
 
 class DryRunRunner:
-    """Runs reads through `inner`; prints writes and runs nothing else."""
+    """Performs reads through `inner`; prints writes and performs nothing else."""
 
     def __init__(self, inner: CommandRunner, out: TextIO = sys.stdout) -> None:
         self._inner = inner
@@ -156,3 +108,10 @@ class DryRunRunner:
         verb = "would run" if command.effect is Effect.WRITE else "would assume"
         print(f"{verb}: {command.display()}", file=self._out)
         return command.dry_run or Result(0, "", "")
+
+    def request(self, request: HttpRequest) -> HttpResponse:
+        if request.effect is Effect.READ and request.dry_run is None:
+            return self._inner.request(request)
+        verb = "would send" if request.effect is Effect.WRITE else "would assume"
+        print(f"{verb}: {request.display()}", file=self._out)
+        return request.dry_run or HttpResponse(200, "")

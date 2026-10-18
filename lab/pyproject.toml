@@ -11,7 +11,9 @@ requires-python = ">=3.13"
 authors = [
     { name = "Alvin Kuruvilla", email = "alvineasokuruvilla@gmail.com" },
 ]
-dependencies = []
+dependencies = [
+    "httpx>=0.28.1",
+]
 
 [project.scripts]
 lab = "lab.main:main"

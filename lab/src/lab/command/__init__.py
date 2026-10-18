@@ -1,4 +1,4 @@
-"""Every external command lab runs, and the runners that execute them."""
+"""Every external effect lab has, and the runners that perform them."""
 
 from lab.command.core import (
     Command,
@@ -7,8 +7,10 @@ from lab.command.core import (
     CommandTimeout,
     DryRunRunner,
     Effect,
+    HttpRequest,
+    HttpResponse,
+    LiveRunner,
     Result,
-    SubprocessRunner,
 )
 
 __all__ = [
@@ -18,6 +20,8 @@ __all__ = [
     "CommandTimeout",
     "DryRunRunner",
     "Effect",
+    "HttpRequest",
+    "HttpResponse",
+    "LiveRunner",
     "Result",
-    "SubprocessRunner",
 ]

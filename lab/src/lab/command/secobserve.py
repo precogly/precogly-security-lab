@@ -1,12 +1,20 @@
-"""Uploading a report to SecObserve, through curl."""
+"""SecObserve's API: uploading a report, and reading the record."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from lab.command.core import Command, CommandError, CommandRunner, Effect, Result
+from lab.command.core import (
+    CommandError,
+    CommandRunner,
+    Effect,
+    HttpRequest,
+    HttpResponse,
+)
 
 PRODUCT = "Precogly"
 BRANCH = "main"
@@ -30,39 +38,39 @@ class Counts:
     resolved: int
 
 
-def upload(url: str, token: str, request: Upload) -> Command:
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"APIToken {token}"}
+
+
+def upload(url: str, token: str, request: Upload) -> HttpRequest:
     """POST /api/import/file_upload_observations_by_name/.
 
-    The token goes in on stdin as a header (`-H @-`), never on the command
-    line. SecObserve resolves whatever this report no longer contains, which is
-    why a report from a failed job must never get here.
+    SecObserve resolves whatever this report no longer contains, which is why a
+    report from a failed job must never get here.
     """
-    fields = {
+    form = {
         "product_name": PRODUCT,
         "branch_name": BRANCH,
         "service": request.service,
     }
     if request.docker_image:
-        fields["docker_image_name_tag"] = request.docker_image
-    argv = ["curl", "--silent", "--show-error", "--fail-with-body", "-H", "@-"]
-    for key, value in fields.items():
-        # --form-string, not -F: a value starting with @ or < is sent as text.
-        argv += ["--form-string", f"{key}={value}"]
-    argv += ["-F", f"file=@{request.report}"]
-    argv.append(f"{url}/api/import/file_upload_observations_by_name/")
-    return Command(
-        tuple(argv),
+        form["docker_image_name_tag"] = request.docker_image
+    return HttpRequest(
+        "POST",
+        f"{url}/api/import/file_upload_observations_by_name/",
         Effect.WRITE,
-        stdin=f"Authorization: APIToken {token}\n",
+        headers=_auth(token),
+        form=form,
+        file=("file", request.report),
         timeout=300,
-        dry_run=Result(0, json.dumps(dict.fromkeys(_COUNT_FIELDS, 0)), ""),
+        dry_run=HttpResponse(200, json.dumps(dict.fromkeys(_COUNT_FIELDS, 0))),
     )
 
 
 def submit(runner: CommandRunner, url: str, token: str, request: Upload) -> Counts:
     """Upload, and return how many observations were new, updated and resolved."""
-    command = upload(url, token, request)
-    body = runner.run(command).stdout
+    sent = upload(url, token, request)
+    body = runner.request(sent).body
     try:
         doc = json.loads(body)
         return Counts(
@@ -71,4 +79,22 @@ def submit(runner: CommandRunner, url: str, token: str, request: Upload) -> Coun
             resolved=int(doc["observations_resolved"]),
         )
     except (ValueError, KeyError, TypeError):
-        raise CommandError(command, f"unexpected response: {body[:300]!r}") from None
+        raise CommandError(sent, f"unexpected response: {body[:300]!r}") from None
+
+
+def get(
+    runner: CommandRunner,
+    url: str,
+    token: str,
+    path: str,
+    query: Sequence[tuple[str, str]] = (),
+) -> Any:
+    """GET an API path, such as `/api/observations/`, and return its JSON."""
+    sent = HttpRequest(
+        "GET", f"{url}{path}", Effect.READ, query=tuple(query), headers=_auth(token)
+    )
+    body = runner.request(sent).body
+    try:
+        return json.loads(body)
+    except ValueError:
+        raise CommandError(sent, f"not JSON: {body[:300]!r}") from None

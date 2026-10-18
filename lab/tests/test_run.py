@@ -75,15 +75,17 @@ def test_a_job_with_inputs_builds_them_once_for_the_commit(tmp_path: Path) -> No
     assert printed.count("docker save") == 2
 
 
-TOKEN = "dd-token-0123456789abcdef"
+TOKEN = "so-token-0123456789abcdef"
+UPLOAD = "/api/import/file_upload_observations_by_name/"
 
 
 def real_box() -> FakeRunner:
     box = lab_box()
     box.on("aws", "secretsmanager", stdout=TOKEN + "\n")
-    box.on(
-        "curl",
-        stdout=json.dumps(
+    box.respond(
+        "POST",
+        UPLOAD,
+        body=json.dumps(
             {
                 "observations_new": 13,
                 "observations_updated": 0,
@@ -111,16 +113,15 @@ def test_a_finished_job_is_uploaded_and_recorded(tmp_path: Path) -> None:
 
     assert (outcome.status, outcome.exit_code) == (Status.OK, 2)
     assert outcome.observations == Counts(new=13, updated=0, resolved=0)
-    [curl] = [c for c in box.commands if c.argv[0] == "curl"]
-    form = set(curl.argv)
-    for field in ("product_name=Precogly", "branch_name=main", "service=zap-baseline"):
-        assert field in form
-    assert (
-        "https://secobserve.tail1234.ts.net/api/import/file_upload_observations_by_name/"
-        in form
-    )
-    # The token reaches curl on stdin only.
-    assert curl.stdin == f"Authorization: APIToken {TOKEN}\n"
+    [upload] = box.requests
+    assert upload.url == f"https://secobserve.tail1234.ts.net{UPLOAD}"
+    assert upload.form == {
+        "product_name": "Precogly",
+        "branch_name": "main",
+        "service": "zap-baseline",
+    }
+    # The token travels only as a secret header.
+    assert upload.headers == {"Authorization": f"APIToken {TOKEN}"}
     assert not any(TOKEN in arg for c in box.commands for arg in c.argv)
     assert meta(box)["status"] == "ok"
 
@@ -133,7 +134,7 @@ def test_a_missing_report_is_never_uploaded(tmp_path: Path) -> None:
     _, [outcome] = execute([ZAP], TARGET, box, now=NOW, root=tmp_path)
 
     assert outcome.status is Status.FAILED
-    assert not any(c.argv[0] == "curl" for c in box.commands)
+    assert not box.requests
     assert meta(box)["status"] == "failed"
 
 
@@ -148,7 +149,7 @@ def test_a_timeout_kills_the_container_and_is_not_reimported(tmp_path: Path) -> 
         "kill",
         "lab-20261017t163000z-94dd831-zap-baseline",
     ) in box.argvs()
-    assert not any(c.argv[0] == "curl" for c in box.commands)
+    assert not box.requests
 
 
 def test_one_failed_job_does_not_stop_the_next(tmp_path: Path) -> None:
@@ -202,5 +203,6 @@ def test_sarif_is_uploaded_with_repository_paths(tmp_path: Path) -> None:
         "artifactLocation"
     ]["uri"]
     assert uri == "backend/app.py"
-    [curl] = [c for c in box.commands if c.argv[0] == "curl"]
-    assert any(a.endswith("upload.sarif") for a in curl.argv)
+    [upload] = box.requests
+    assert upload.file is not None
+    assert upload.file[1].name == "upload.sarif"

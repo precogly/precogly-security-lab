@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 
-from lab.command import CommandError, CommandRunner, DryRunRunner, SubprocessRunner
+from lab.command import CommandError, CommandRunner, DryRunRunner, LiveRunner
 from lab.job import Job, JobError, load_jobs
 from lab.run import Status, execute
 from lab.target import TargetError, load_target
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
 
         selected = _select(jobs, args.jobs, args.all)
         target = load_target(_definitions("targets") / f"{TARGET}.toml")
-        runner: CommandRunner = SubprocessRunner()
+        runner: CommandRunner = LiveRunner()
         if args.dry_run:
             runner = DryRunRunner(runner)
         rid, outcomes = execute(selected, target, runner, now=datetime.now(UTC))

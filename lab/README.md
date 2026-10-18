@@ -49,8 +49,9 @@ src/lab/
   inputs.py      Precogly's source and images, for jobs that scan them
   run.py         one run: jobs, report checks, uploads, meta.json
   sarif.py       rewrites SARIF paths to repository paths before upload
-  command/       every external command, as a READ or a WRITE, and the runners
-                 that execute them; --dry-run runs the reads and prints the writes
+  command/       every external effect, a process or an HTTP request, as a READ
+                 or a WRITE; --dry-run performs the reads and prints the writes
+    core/        the effect types and the runners that perform them
   harness/       the cross-tenant harness
 ```
 
