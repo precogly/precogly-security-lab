@@ -8,6 +8,7 @@ from lab.command.core import (
     Command,
     CommandError,
     CommandTimeout,
+    HttpError,
     HttpRequest,
     HttpResponse,
     Result,
@@ -61,7 +62,7 @@ class FakeRunner:
         if queued:
             response = queued.pop(0) if len(queued) > 1 else queued[0]
         if not 200 <= response.status < 300:
-            raise CommandError(request, f"HTTP {response.status}", response.body)
+            raise HttpError(request, response.status, response.body)
         return response
 
     def argvs(self) -> list[tuple[str, ...]]:

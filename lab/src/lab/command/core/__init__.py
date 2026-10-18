@@ -8,7 +8,7 @@ or uploading anything.
 """
 
 from lab.command.core.effect import CommandError, CommandTimeout, Effect
-from lab.command.core.http import HttpRequest, HttpResponse
+from lab.command.core.http import HttpError, HttpRequest, HttpResponse
 from lab.command.core.process import Command, Result
 from lab.command.core.runners import CommandRunner, DryRunRunner, LiveRunner
 
@@ -19,6 +19,7 @@ __all__ = [
     "CommandTimeout",
     "DryRunRunner",
     "Effect",
+    "HttpError",
     "HttpRequest",
     "HttpResponse",
     "LiveRunner",

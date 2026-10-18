@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlencode
 
-from lab.command.core.effect import Effect
+from lab.command.core.effect import CommandError, Effect
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,10 @@ class HttpRequest:
     form: Mapping[str, str] = field(default_factory=dict)
     # (field name, path) of a file sent in the form.
     file: tuple[str, Path] | None = None
+    # A JSON body, for APIs that parse nothing else. Keys named in `secret` are
+    # never shown, as for `Command.secret`.
+    json: Mapping[str, str] | None = None
+    secret: frozenset[str] = frozenset()
     timeout: float = 60
     # What a dry run assumes the response was, as for `Command.dry_run`.
     dry_run: HttpResponse | None = None
@@ -44,9 +48,24 @@ class HttpRequest:
         parts += [f"{key}={value}" for key, value in self.form.items()]
         if self.file:
             parts.append(f"{self.file[0]}=@{self.file[1]}")
+        for key, value in (self.json or {}).items():
+            parts.append(
+                f"{key}=<redacted>" if key in self.secret else f"{key}={value}"
+            )
         return shlex.join(parts)
 
     def redact(self, text: str) -> str:
-        for value in self.headers.values():
-            text = text.replace(value, "<redacted>")
+        hidden = [*self.headers.values()]
+        hidden += [v for k, v in (self.json or {}).items() if k in self.secret]
+        for value in hidden:
+            if value:
+                text = text.replace(value, "<redacted>")
         return text
+
+
+class HttpError(CommandError):
+    """A request the server answered with a status other than 2xx."""
+
+    def __init__(self, request: HttpRequest, status: int, body: str) -> None:
+        super().__init__(request, f"HTTP {status}", body)
+        self.status = status

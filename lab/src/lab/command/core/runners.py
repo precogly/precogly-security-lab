@@ -12,7 +12,7 @@ from typing import Protocol, TextIO
 import httpx
 
 from lab.command.core.effect import CommandError, CommandTimeout, Effect
-from lab.command.core.http import HttpRequest, HttpResponse
+from lab.command.core.http import HttpError, HttpRequest, HttpResponse
 from lab.command.core.process import Command, Result
 
 
@@ -86,6 +86,7 @@ class LiveRunner:
                     headers=dict(request.headers),
                     data=dict(request.form) or None,
                     files=files,
+                    json=dict(request.json) if request.json is not None else None,
                     timeout=request.timeout,
                 )
             except OSError as err:
@@ -99,7 +100,7 @@ class LiveRunner:
         # Every API lab calls answers 2xx on success, so anything else fails,
         # with the body: SecObserve says there what was wrong with a request.
         if not response.is_success:
-            raise CommandError(request, f"HTTP {response.status_code}", response.text)
+            raise HttpError(request, response.status_code, response.text)
         return HttpResponse(response.status_code, response.text)
 
 
