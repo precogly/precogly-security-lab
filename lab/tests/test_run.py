@@ -11,6 +11,7 @@ from pathlib import Path
 
 from lab.command import DryRunRunner, Effect
 from lab.command.fake import FakeRunner
+from lab.command.secobserve import Counts
 from lab.job import Input, load_job
 from lab.run import Status, execute, run_id
 from lab.target import load_target
@@ -80,7 +81,16 @@ TOKEN = "dd-token-0123456789abcdef"
 def real_box() -> FakeRunner:
     box = lab_box()
     box.on("aws", "secretsmanager", stdout=TOKEN + "\n")
-    box.on("curl", stdout='{"test": 7, "statistics": {}}')
+    box.on(
+        "curl",
+        stdout=json.dumps(
+            {
+                "observations_new": 13,
+                "observations_updated": 0,
+                "observations_resolved": 0,
+            }
+        ),
+    )
     # ZAP exits 2 for warnings; that is not a failure.
     box.on("docker", "run", returncode=2)
     return box
@@ -95,31 +105,29 @@ def meta(box: FakeRunner) -> dict[str, object]:
     return doc
 
 
-def test_a_finished_job_is_reimported_and_recorded(tmp_path: Path) -> None:
+def test_a_finished_job_is_uploaded_and_recorded(tmp_path: Path) -> None:
     box = real_box()
     _, [outcome] = execute([ZAP], TARGET, box, now=NOW, root=tmp_path)
 
-    assert (outcome.status, outcome.exit_code, outcome.test_id) == (Status.OK, 2, 7)
+    assert (outcome.status, outcome.exit_code) == (Status.OK, 2)
+    assert outcome.observations == Counts(new=13, updated=0, resolved=0)
     [curl] = [c for c in box.commands if c.argv[0] == "curl"]
     form = set(curl.argv)
-    for field in (
-        "scan_type=ZAP Scan",
-        "test_title=zap-baseline",
-        f"commit_hash={SHA}",
-        "build_id=20261017T163000Z-94dd831",
-        "version=2.17.0",
-        "close_old_findings=true",
-    ):
+    for field in ("product_name=Precogly", "branch_name=main", "service=zap-baseline"):
         assert field in form
+    assert (
+        "https://secobserve.tail1234.ts.net/api/import/file_upload_observations_by_name/"
+        in form
+    )
     # The token reaches curl on stdin only.
-    assert curl.stdin == f"Authorization: Token {TOKEN}\n"
+    assert curl.stdin == f"Authorization: APIToken {TOKEN}\n"
     assert not any(TOKEN in arg for c in box.commands for arg in c.argv)
     assert meta(box)["status"] == "ok"
 
 
-def test_a_missing_report_is_never_reimported(tmp_path: Path) -> None:
-    # A reimport closes every finding the report lacks, so sending nothing
-    # would close the Test's whole history.
+def test_a_missing_report_is_never_uploaded(tmp_path: Path) -> None:
+    # An upload resolves every finding the report lacks, so sending nothing
+    # would resolve the job's whole history.
     box = real_box()
     box.on("test", "-s", returncode=1)
     _, [outcome] = execute([ZAP], TARGET, box, now=NOW, root=tmp_path)
@@ -151,3 +159,48 @@ def test_one_failed_job_does_not_stop_the_next(tmp_path: Path) -> None:
     first, second = replace(ZAP, name="first"), replace(ZAP, name="second")
     _, outcomes = execute([first, second], TARGET, box, now=NOW, root=tmp_path)
     assert [o.status for o in outcomes] == [Status.TIMEOUT, Status.OK]
+
+
+def test_sarif_is_uploaded_with_repository_paths(tmp_path: Path) -> None:
+    # A path that depends on where the source was mounted would change between
+    # runs, and every finding would count as new.
+    box = real_box()
+    report = {
+        "runs": [
+            {
+                "tool": {"driver": {"name": "Semgrep"}},
+                "results": [
+                    {
+                        "ruleId": "r",
+                        "locations": [
+                            {
+                                "physicalLocation": {
+                                    "artifactLocation": {
+                                        "uri": "/in/precogly-source/backend/app.py"
+                                    }
+                                }
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    box.on("cat", stdout=json.dumps(report))
+    semgrep = replace(ZAP, name="semgrep", report="report.sarif", out_mount="/out")
+    _, [outcome] = execute([semgrep], TARGET, box, now=NOW, root=tmp_path)
+
+    assert outcome.status is Status.OK
+    [prepared] = [
+        c
+        for c in box.commands
+        if c.argv[:1] == ("tee",) and c.argv[1].endswith("upload.sarif")
+    ]
+    assert prepared.stdin is not None
+    doc = json.loads(prepared.stdin)
+    uri = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+        "artifactLocation"
+    ]["uri"]
+    assert uri == "backend/app.py"
+    [curl] = [c for c in box.commands if c.argv[0] == "curl"]
+    assert any(a.endswith("upload.sarif") for a in curl.argv)

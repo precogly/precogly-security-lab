@@ -1,9 +1,10 @@
 # Trivy: known vulnerabilities in Precogly's backend image, as built at the run's commit.
-name      = "trivy-backend"
-image     = "aquasec/trivy:0.76.0"
-inputs    = ["precogly-images"]
+# CycloneDX, not SARIF: SARIF cannot say which package in an image a finding is in.
+name        = "trivy-backend"
+image       = "aquasec/trivy:0.76.0"
+inputs      = ["precogly-images"]
+scans_image = "precogly-backend"
 # The image's entrypoint is trivy.
-command   = ["image", "--input", "/in/precogly-images/backend.tar", "--format", "json", "--output", "/out/report.json"]
-report    = "report.json"
-scan_type = "Trivy Scan"
-timeout   = "30m"
+command     = ["image", "--input", "/in/precogly-images/backend.tar", "--scanners", "vuln", "--format", "cyclonedx", "--output", "/out/report.cdx.json"]
+report      = "report.cdx.json"
+timeout     = "30m"

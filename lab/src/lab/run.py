@@ -11,18 +11,18 @@ from importlib.resources import files
 from pathlib import Path
 
 import lab
-from lab import inputs
+from lab import inputs, sarif
 from lab.command import (
     CommandError,
     CommandRunner,
     CommandTimeout,
     aws,
-    defectdojo,
     docker,
     fs,
+    secobserve,
     tailscale,
 )
-from lab.container import Run, container_name, run_args
+from lab.container import Run, built_image_ref, container_name, run_args
 from lab.job import Job
 from lab.target import Target
 
@@ -30,17 +30,17 @@ from lab.target import Target
 REGION = "us-east-1"
 # Run directories, inputs and logs, on the scanner box.
 ROOT = Path("/var/lib/lab")
-# DefectDojo's tailnet machine name.
-DEFECTDOJO_HOST = "defectdojo"
+# SecObserve's tailnet machine name.
+SECOBSERVE_HOST = "secobserve"
 
 
 class Status(StrEnum):
     OK = "ok"
-    # The job ended without a non-empty report. Not reimported.
+    # The job ended without a non-empty report. Not uploaded.
     FAILED = "failed"
     TIMEOUT = "timeout"
-    # The report exists but DefectDojo did not take it.
-    REIMPORT_FAILED = "reimport-failed"
+    # The report exists but SecObserve did not take it.
+    UPLOAD_FAILED = "upload-failed"
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,8 @@ class Outcome:
     # The container's exit code, recorded only: scanners exit non-zero when
     # they find something, so success is judged by the report.
     exit_code: int | None
-    test_id: int | None
+    # What SecObserve did with the upload: new, updated and resolved findings.
+    observations: secobserve.Counts | None
     error: str | None
 
 
@@ -73,7 +74,7 @@ def assets_dir(job: Job) -> Path | None:
 
 
 def tool_version(job: Job) -> str:
-    """What DefectDojo records as the version: the image tag, or lab's own."""
+    """The scanner's version for meta.json: the image tag, or lab's own."""
     if job.built_image:
         return f"lab {lab.__version__}"
     name = job.image.rsplit("/", 1)[-1]
@@ -90,7 +91,7 @@ def execute(
     root: Path = ROOT,
     region: str = REGION,
 ) -> tuple[str, list[Outcome]]:
-    """Run each job, then reimport each report that exists. Returns the run ID
+    """Run each job, then upload each report that exists. Returns the run ID
     and one outcome per job.
 
     Through DryRunRunner this prints every change it would make, having read
@@ -110,7 +111,7 @@ def execute(
     wanted = frozenset().union(*(job.inputs for job in jobs))
     prepared = inputs.prepare(runner, wanted, sha, root)
 
-    defectdojo_url = f"https://{DEFECTDOJO_HOST}.{tailnet}"
+    secobserve_url = f"https://{SECOBSERVE_HOST}.{tailnet}"
     token: str | None = None
     outcomes = []
     for job in jobs:
@@ -135,7 +136,7 @@ def execute(
             for name, env in job.secret_env.items()
         }
         exit_code: int | None = None
-        test_id: int | None = None
+        counts: secobserve.Counts | None = None
         error: str | None = None
         try:
             exit_code = runner.run(
@@ -152,8 +153,8 @@ def execute(
             status, error = Status.TIMEOUT, str(err)
         else:
             report = out_dir / job.report
-            # Reimport closes every finding the report lacks, so a missing or
-            # empty report must never be sent: it would close the Test's
+            # An upload resolves every finding the report lacks, so a missing
+            # or empty report must never be sent: it would resolve the job's
             # whole history.
             if not fs.non_empty(runner, report):
                 status = Status.FAILED
@@ -161,24 +162,26 @@ def execute(
             else:
                 try:
                     if token is None:
-                        token = aws.defectdojo_token(runner, region)
-                    test_id = defectdojo.submit(
+                        token = aws.secobserve_token(runner, region)
+                    counts = secobserve.submit(
                         runner,
-                        defectdojo_url,
+                        secobserve_url,
                         token,
-                        defectdojo.Reimport(
-                            scan_type=job.scan_type,
-                            report=report,
-                            test_title=job.name,
-                            commit_hash=sha,
-                            build_id=rid,
-                            version=tool_version(job),
-                            scan_date=now.astimezone(UTC).date(),
+                        secobserve.Upload(
+                            report=_for_upload(runner, job, report),
+                            service=job.name,
+                            docker_image=(
+                                built_image_ref(job.scans_image, sha).removeprefix(
+                                    "lab/"
+                                )
+                                if job.scans_image
+                                else None
+                            ),
                         ),
                     )
                     status = Status.OK
-                except CommandError as err:
-                    status, error = Status.REIMPORT_FAILED, str(err)
+                except (CommandError, sarif.SarifError) as err:
+                    status, error = Status.UPLOAD_FAILED, str(err)
 
         outcome = Outcome(
             job=job.name,
@@ -190,10 +193,24 @@ def execute(
             finished=clock().isoformat(),
             status=status,
             exit_code=exit_code,
-            test_id=test_id,
+            observations=counts,
             error=error,
         )
         meta = json.dumps(asdict(outcome), indent=2) + "\n"
         runner.run(fs.write_text(out_dir / "meta.json", meta))
         outcomes.append(outcome)
     return rid, outcomes
+
+
+def _for_upload(runner: CommandRunner, job: Job, report: Path) -> Path:
+    """The file to upload: SARIF with repository paths, or the report as is.
+
+    SARIF from a source scan carries container paths (/in/precogly-source/...),
+    and a finding whose path changes between runs counts as new.
+    """
+    if report.suffix != ".sarif":
+        return report
+    prepared = sarif.prepare(fs.read_text(runner, report), job.name)
+    upload = report.with_name("upload.sarif")
+    runner.run(fs.write_text(upload, json.dumps(prepared)))
+    return upload

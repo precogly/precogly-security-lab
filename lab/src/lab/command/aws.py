@@ -52,6 +52,6 @@ def job_secret(runner: CommandRunner, name: str, region: str) -> str:
     return secret(runner, f"{PROJECT}/jobs/{name}", region)
 
 
-def defectdojo_token(runner: CommandRunner, region: str) -> str:
-    """lab's DefectDojo API token, written by the DefectDojo box at boot."""
-    return secret(runner, f"{PROJECT}/defectdojo-lab-token", region)
+def secobserve_token(runner: CommandRunner, region: str) -> str:
+    """lab's SecObserve upload token (Upload role), written by the SecObserve box."""
+    return secret(runner, f"{PROJECT}/secobserve-upload-token", region)

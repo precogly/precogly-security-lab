@@ -11,22 +11,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
-class ScanType(StrEnum):
-    """DefectDojo parser names, from `dojo/tools/*/parser.py` at 3.4.101.
-
-    A job's `scan_type` must be one of these. `lab run --check` looks the name
-    up in the deployed DefectDojo, so a rename in an upgrade fails there.
-    """
-
-    ZAP = "ZAP Scan"
-    TRIVY = "Trivy Scan"
-    SEMGREP = "Semgrep JSON Report"
-    GARAK = "Garak Scan"
-    PROMPTFOO = "Promptfoo Scan"
-    GENERIC = "Generic Findings Import"
-    SARIF = "SARIF"
-
-
 class Input(StrEnum):
     """What lab builds from Precogly at the run's commit, once per run."""
 
@@ -64,7 +48,7 @@ _FIELDS = frozenset(
         "image",
         "command",
         "report",
-        "scan_type",
+        "scans_image",
         "inputs",
         "assets",
         "secrets",
@@ -72,7 +56,8 @@ _FIELDS = frozenset(
         "out_mount",
     }
 )
-_REQUIRED = frozenset({"name", "image", "command", "report", "scan_type"})
+# No parser name: SecObserve detects the parser from the report itself.
+_REQUIRED = frozenset({"name", "image", "command", "report"})
 
 
 class JobError(ValueError):
@@ -85,7 +70,9 @@ class Job:
     image: str
     command: tuple[str, ...]
     report: str
-    scan_type: ScanType
+    # The built image this job scans, if any, so SecObserve labels its findings
+    # with that image and the commit it was built from.
+    scans_image: str | None
     inputs: frozenset[Input]
     assets: str | None
     # Names under precogly-seclab/jobs/ in Secrets Manager.
@@ -169,6 +156,15 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
     if assets is not None and not isinstance(assets, str):
         raise JobError("assets must be a string")
 
+    scans_image = raw.get("scans_image")
+    if scans_image is not None:
+        if scans_image not in BUILT_IMAGES:
+            raise JobError(
+                f"scans_image {scans_image!r} is not one of {sorted(BUILT_IMAGES)}"
+            )
+        if Input.IMAGES not in inputs:
+            raise JobError(f"scans_image needs {Input.IMAGES!s} in inputs")
+
     secrets = tuple(_strings(raw, "secrets", []))
     for secret in secrets:
         if not _SECRET_NAME.fullmatch(secret):
@@ -181,7 +177,7 @@ def _parse(raw: dict[str, Any], stem: str) -> Job:
         image=image,
         command=command,
         report=report,
-        scan_type=_enum(ScanType, _string(raw, "scan_type"), "scan_type"),
+        scans_image=scans_image,
         inputs=inputs,
         assets=assets,
         secrets=secrets,

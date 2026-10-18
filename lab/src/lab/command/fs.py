@@ -19,6 +19,20 @@ def non_empty(runner: CommandRunner, path: Path) -> bool:
     return runner.run(test_non_empty(path)).returncode == 0
 
 
+def cat(path: Path) -> Command:
+    # A dry run assumes an empty SARIF report: the job that would have written
+    # the file was not run.
+    return Command(
+        ("cat", str(path)),
+        Effect.READ,
+        dry_run=Result(0, '{"runs": [{"results": []}]}', ""),
+    )
+
+
+def read_text(runner: CommandRunner, path: Path) -> str:
+    return runner.run(cat(path)).stdout
+
+
 def mkdir(path: Path) -> Command:
     return Command(("mkdir", "-p", str(path)), Effect.WRITE)
 

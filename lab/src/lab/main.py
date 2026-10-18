@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "jobs":
             for job in jobs.values():
                 inputs = ", ".join(sorted(job.inputs)) or "-"
-                print(f"{job.name:<18} {job.scan_type:<24} {inputs:<16} {job.image}")
+                print(f"{job.name:<18} {job.report:<18} {inputs:<16} {job.image}")
             return 0
 
         selected = _select(jobs, args.jobs, args.all)
@@ -69,8 +69,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"dry run {rid}: nothing was changed")
             return 0
         for outcome in outcomes:
-            where = f"test {outcome.test_id}" if outcome.test_id is not None else ""
-            print(f"{outcome.job:<18} {outcome.status:<16} {where}")
+            c = outcome.observations
+            counts = (
+                f"{c.new} new, {c.updated} updated, {c.resolved} resolved" if c else ""
+            )
+            print(f"{outcome.job:<18} {outcome.status:<16} {counts}")
             if outcome.error:
                 print(f"  {outcome.error}", file=sys.stderr)
         print(f"run {rid}")

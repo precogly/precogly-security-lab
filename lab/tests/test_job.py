@@ -6,14 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from lab.job import Input, JobError, ScanType, load_job, load_jobs
+from lab.job import Input, JobError, load_job, load_jobs
 
 ZAP = """
 name      = "zap-baseline"
 image     = "ghcr.io/zaproxy/zaproxy:2.17.0"
 command   = ["zap-baseline.py", "-t", "{target_url}", "-x", "/out/report.xml"]
 report    = "report.xml"
-scan_type = "ZAP Scan"
 """
 
 
@@ -25,7 +24,7 @@ def write(tmp_path: Path, body: str, name: str = "zap-baseline") -> Path:
 
 def test_loads_a_registry_job(tmp_path: Path) -> None:
     job = load_job(write(tmp_path, ZAP))
-    assert job.scan_type is ScanType.ZAP
+    assert job.scans_image is None
     assert job.command[2] == "{target_url}"
     assert job.inputs == frozenset()
     assert job.built_image is None
@@ -38,8 +37,7 @@ image     = "@precogly-backend"
 inputs    = ["precogly-images"]
 command   = ["python", "/job/run.py"]
 assets    = "harness"
-report    = "findings.json"
-scan_type = "Generic Findings Import"
+report    = "findings.sarif"
 """
     job = load_job(write(tmp_path, body, "harness"))
     assert job.built_image == "precogly-backend"
@@ -54,7 +52,6 @@ def test_load_jobs_keys_by_name(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        (("ZAP Scan", "Zap Scan"), "unknown scan_type 'Zap Scan'"),
         (("2.17.0", "latest"), "must pin a version tag or digest"),
         (("zaproxy:2.17.0", "zaproxy"), "must pin a version tag or digest"),
         (("{target_url}", "{target_host}"), "command uses ['target_host']"),
@@ -146,3 +143,39 @@ def test_out_mount(tmp_path: Path, mount: str, ok: bool) -> None:
     else:
         with pytest.raises(JobError, match="out_mount"):
             load_job(path)
+
+
+def test_scans_image_names_a_built_image_and_needs_its_input(tmp_path: Path) -> None:
+    trivy = """
+name        = "trivy-backend"
+image       = "aquasec/trivy:0.76.0"
+inputs      = ["precogly-images"]
+scans_image = "precogly-backend"
+command     = ["image", "--input", "/in/precogly-images/backend.tar"]
+report      = "report.cdx.json"
+"""
+    assert load_job(write(tmp_path, trivy, "trivy-backend")).scans_image == (
+        "precogly-backend"
+    )
+    with pytest.raises(JobError, match="scans_image needs"):
+        load_job(
+            write(
+                tmp_path,
+                trivy.replace('inputs      = ["precogly-images"]\n', ""),
+                "trivy-backend",
+            )
+        )
+    with pytest.raises(JobError, match="is not one of"):
+        load_job(
+            write(
+                tmp_path,
+                trivy.replace('"precogly-backend"', '"nginx"'),
+                "trivy-backend",
+            )
+        )
+
+
+def test_a_parser_name_is_an_unknown_key(tmp_path: Path) -> None:
+    # SecObserve detects the parser from the report, so naming one is a mistake.
+    with pytest.raises(JobError, match="unknown keys"):
+        load_job(write(tmp_path, ZAP + 'scan_type = "ZAP Scan"\n'))

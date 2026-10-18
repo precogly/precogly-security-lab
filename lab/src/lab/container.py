@@ -61,7 +61,7 @@ def run_args(job: Job, run: Run) -> list[str]:
         container_name(job, run),
         # Never --network host. With the box's metadata hop limit at 1, a bridge
         # container cannot reach the metadata service, so cannot take the box's
-        # role, which can read lab's DefectDojo token.
+        # role, which can read lab's SecObserve upload token.
         "--network",
         "bridge",
         "--add-host",

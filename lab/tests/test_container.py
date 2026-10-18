@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from lab.container import Run, run_args
-from lab.job import Input, Job, ScanType
+from lab.job import Input, Job
 
 RUN = Run(
     run_id="20261017T1630Z-94dd831",
@@ -25,7 +25,7 @@ ZAP = Job(
     image="ghcr.io/zaproxy/zaproxy:2.17.0",
     command=("zap-baseline.py", "-t", "{target_url}", "-x", "/out/report.xml"),
     report="report.xml",
-    scan_type=ScanType.ZAP,
+    scans_image=None,
     inputs=frozenset(),
     assets=None,
     secrets=(),
@@ -70,7 +70,6 @@ def test_mounts_only_declared_inputs_read_only() -> None:
         name="harness",
         image="@precogly-backend",
         command=("python", "/job/run.py"),
-        scan_type=ScanType.GENERIC,
         inputs=frozenset({Input.IMAGES}),
         assets="harness",
     )
